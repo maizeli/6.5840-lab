@@ -10,11 +10,10 @@ package main
 //
 
 import (
+	"6.5840/mr"
 	"fmt"
 	"os"
 	"time"
-
-	"6.5840/mr"
 )
 
 func main() {
@@ -27,7 +26,6 @@ func main() {
 	for m.Done() == false {
 		time.Sleep(time.Second)
 	}
-	fmt.Printf("m.Done() return true")
 
 	time.Sleep(time.Second)
 }

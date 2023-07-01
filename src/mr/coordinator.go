@@ -7,9 +7,20 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"os"
 	"sync"
 	"time"
 )
+
+var Logger *log.Logger
+
+func init() {
+	file, err := os.Create(fmt.Sprintf("log-%v.txt", time.Now().Unix()))
+	if err != nil {
+		panic(err)
+	}
+	Logger = log.New(file, "", log.Lshortfile|log.Ldate|log.Lmicroseconds)
+}
 
 type TaskStatus int32
 
@@ -52,9 +63,20 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
+	checkDone := func(tasks []*Task) bool {
+		for _, task := range tasks {
+			if task.Status == TaskStatusRunning || task.Status == TaskStatusFail || task.Status == TaskStatusNotStart {
+				return false
+			}
+		}
+		return true
+	}
 	c.Lock.Lock()
 	defer func() {
-		fmt.Println("GetTaskReply=", Marshal(reply.Task))
+		if reply != nil {
+			reply.Done = checkDone(c.ReduceTasks)
+		}
+		Logger.Println("GetTaskReply=", Marshal(reply.Task))
 		c.Lock.Unlock()
 		// 超时设置为失败
 		go func() {
@@ -68,7 +90,7 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 				c.Lock.Lock()
 				defer c.Lock.Unlock()
 				if reply.Task.Status == TaskStatusRunning {
-					fmt.Println("set timeout success")
+					Logger.Println("set timeout success")
 					reply.Task.Status = TaskStatusFail
 				}
 			}
@@ -79,37 +101,25 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		if task.Status == TaskStatusNotStart || task.Status == TaskStatusFail {
 			task.Status = TaskStatusRunning
 			reply.Task = task
-			reply.Done = false
 			reply.NReduce = c.NReduce
 			return nil
 		}
 	}
 
-	checkDone := func(tasks []*Task) bool {
-		for _, task := range tasks {
-			if task.Status == TaskStatusRunning || task.Status == TaskStatusFail || task.Status == TaskStatusNotStart {
-				return false
-			}
-		}
-		return true
-	}
 	// 此时map存在失败或者运行中的任务
 	if done := checkDone(c.MapTasks); !done {
-		reply.Done = false
-		fmt.Println("MapTaskHasRunning!!!")
+		Logger.Println("MapTaskHasRunning!!!")
 		return nil
 	}
 	// map has done, get reduce task
 	for _, task := range c.ReduceTasks {
 		if task.Status == TaskStatusNotStart || task.Status == TaskStatusFail {
-			reply.Done = false
 			reply.Task = task
 			task.Status = TaskStatusRunning
 			reply.NReduce = c.NReduce
 			return nil
 		}
 	}
-	reply.Done = (checkDone(c.ReduceTasks) || checkDone(c.MapTasks))
 
 	return nil
 }
@@ -135,7 +145,7 @@ func (c *Coordinator) updateMapTaskStatus(id int32, status TaskStatus) error {
 	if idx == -1 {
 		return fmt.Errorf("not found map task, task id=%v", id)
 	}
-	fmt.Printf("MapTask[%v] %v->%v\n", id, c.MapTasks[idx].Status, status)
+	Logger.Printf("MapTask[%v] %v->%v\n", id, c.MapTasks[idx].Status, status)
 	c.MapTasks[idx].Status = status
 
 	return nil
@@ -154,7 +164,7 @@ func (c *Coordinator) updateReduceStatus(id int32, status TaskStatus) error {
 	if idx == -1 {
 		return fmt.Errorf("not found map task, task id=%v", id)
 	}
-	fmt.Printf("Reduce[%v] %v->%v", id, c.ReduceTasks[idx].Status, status)
+	Logger.Printf("Reduce[%v] %v->%v", id, c.ReduceTasks[idx].Status, status)
 	c.ReduceTasks[idx].Status = status
 
 	return nil
@@ -164,17 +174,18 @@ func (c *Coordinator) updateReduceStatus(id int32, status TaskStatus) error {
 func (c *Coordinator) server() {
 	err := rpc.Register(c)
 	if err != nil {
-		fmt.Printf("rpc.Register fail, err=%w", err)
+		Logger.Printf("rpc.Register fail, err=%w\n", err)
+		panic(err)
 	}
 	rpc.HandleHTTP()
-	l, e := net.Listen("tcp", ":12345")
-	//sockname := coordinatorSock()
-	//os.Remove(sockname)
-	//l, e := net.Listen("unix", sockname)
+	// l, e := net.Listen("tcp", ":12345")
+	sockname := coordinatorSock()
+	os.Remove(sockname)
+	l, e := net.Listen("unix", sockname)
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
-	fmt.Printf("server.Listen success\n")
+	Logger.Printf("server.Listen success\n")
 	go http.Serve(l, nil)
 }
 
@@ -219,7 +230,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		})
 	}
 
-	fmt.Println(Marshal(c))
+	Logger.Println(Marshal(c))
 	c.server()
 	return &c
 }

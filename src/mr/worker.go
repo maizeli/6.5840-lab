@@ -10,7 +10,7 @@ import (
 	"net/rpc"
 	"os"
 	"regexp"
-	"time"
+	"sort"
 )
 
 // Map functions return a slice of KeyValue.
@@ -42,10 +42,10 @@ func Worker(mapf func(string, string) []KeyValue,
 			break
 		}
 		if reply.Task != nil {
-			fmt.Printf("reply.Task=%v\n", Marshal(reply.Task))
+			Logger.Printf("reply.Task=%v\n", Marshal(reply.Task))
 			err := StartTask(reply.Task, reply.NReduce, mapf, reducef)
 			if err != nil {
-				fmt.Printf("Worker running fail, err=%v\n", err)
+				Logger.Printf("Worker running fail, err=%v\n", err)
 			}
 			args := &UpdateTaskStatusArgs{
 				TaskId:     reply.Task.ID,
@@ -58,7 +58,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				continue
 			}
 		}
-		time.Sleep(time.Millisecond)
+		// time.Sleep(time.Millisecond)
 	}
 }
 
@@ -74,7 +74,7 @@ func StartTask(task *Task, nReduce int, mapf func(string, string) []KeyValue, re
 }
 
 func StartMapTask(task *Task, nReduce int, mapf func(string, string) []KeyValue) error {
-	fmt.Printf("MapTask[%v] begin...\n", task.ID)
+	Logger.Printf("MapTask[%v] begin...\n", task.ID)
 	file, err := os.Open(task.FileName)
 	if err != nil {
 		return fmt.Errorf("StartMapTask fail, err=%w", err)
@@ -106,25 +106,31 @@ func StartMapTask(task *Task, nReduce int, mapf func(string, string) []KeyValue)
 			return fmt.Errorf("StartMapTask fail, err=%w", err)
 		}
 	}
-	fmt.Printf("MapTask[%v] Success!!!\n", task.ID)
+	Logger.Printf("MapTask[%v] Success!!!\n", task.ID)
 
 	return nil
 }
 
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 func StartReduceTask(task *Task, nReduce int, reducef func(string, []string) string) error {
-	fmt.Printf("call StartReduceTask\n")
+	Logger.Printf("call StartReduceTask\n")
 	entries, err := os.ReadDir("./")
 	if err != nil {
 		return fmt.Errorf("StartReduceTask fail, err=%w", err)
 	}
 	str := fmt.Sprintf(`^mr-\w+-%v$`, task.ID)
 	pattern := regexp.MustCompile(str)
-	key := ""
-	values := []string{}
+	intermediate := []KeyValue{}
 	for _, entry := range entries {
 		if pattern.MatchString(entry.Name()) {
 			file, err := os.Open(entry.Name())
-			// fmt.Println("fileName=", entry.Name())
 			if err != nil {
 				return fmt.Errorf("StartReduceTask fail, err=%w", err)
 			}
@@ -137,31 +143,43 @@ func StartReduceTask(task *Task, nReduce int, reducef func(string, []string) str
 					break
 				}
 				if err != nil {
-					fmt.Println("StartReduceTask: decoder.Decode fail, err=", err)
+					Logger.Println("StartReduceTask: decoder.Decode fail, err=", err)
 					break
 				}
-				// fmt.Println("k=", kv.Key, "v=", kv.Value)
-				key = kv.Key
-				values = append(values, kv.Value)
+				intermediate = append(intermediate, kv)
 			}
 		}
 	}
-	result := reducef(key, values)
+	sort.Sort(ByKey(intermediate))
+	i := 0
 	file, err := os.CreateTemp("", "*")
 	if err != nil {
 		return fmt.Errorf("StartReduceTask fail, err=%w", err)
 	}
-	path := file.Name()
-	_, err = file.Write([]byte(fmt.Sprintf("%v %v\n", key, result)))
-	if err != nil {
-		return fmt.Errorf("StartReduceTask fail, err=%w", err)
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+		// this is the correct format for each line of Reduce output.
+		_, err := fmt.Fprintf(file, "%v %v\n", intermediate[i].Key, output)
+		if err != nil {
+			return fmt.Errorf("StartReduceTask fail, err=%w", err)
+		}
+		i = j
 	}
 	_ = file.Close()
+	path := file.Name()
 	if err = os.Rename(path, fmt.Sprintf("mr-out-%v", task.ID)); err != nil {
 		return fmt.Errorf("StartReduceTask fail, err=%w", err)
 	}
 
-	fmt.Printf("call StartReduceTask success\n")
+	Logger.Printf("call StartReduceTask success\n")
 	return nil
 }
 
@@ -196,20 +214,20 @@ func CallExample() {
 // usually returns true.
 // returns false if something goes wrong.
 func call(rpcname string, args interface{}, reply interface{}) bool {
-	c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":12345")
-	//sockname := coordinatorSock()
-	//c, err := rpc.DialHTTP("unix", sockname)
+	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":12345")
+	sockname := coordinatorSock()
+	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
 		log.Fatal("call: dialing:", err)
 	}
 	defer c.Close()
 
 	err = c.Call(rpcname, args, reply)
-	fmt.Println("call ", rpcname, "fail, req=", Marshal(args), "resp=", Marshal(reply), "err=", err)
+	Logger.Println("call ", rpcname, "fail, req=", Marshal(args), "resp=", Marshal(reply), "err=", err)
 	if err == nil {
 		return true
 	}
 
-	fmt.Println("call ", rpcname, "fail, req=", Marshal(args), "resp=", Marshal(reply), "err=", err)
+	Logger.Println("call ", rpcname, "fail, req=", Marshal(args), "resp=", Marshal(reply), "err=", err)
 	return false
 }
