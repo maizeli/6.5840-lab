@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/rpc"
 	"os"
 	"regexp"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -34,28 +36,33 @@ func Worker(mapf func(string, string) []KeyValue,
 		reply := &GetTaskReply{}
 		ok := call("Coordinator.GetTask", args, reply)
 		if !ok {
-			fmt.Printf("call Coorinator.GetTask fail")
 			continue
 		}
 		if reply.Done {
 			break
 		}
 		if reply.Task != nil {
+			fmt.Printf("reply.Task=%v\n", Marshal(reply.Task))
 			err := StartTask(reply.Task, reply.NReduce, mapf, reducef)
 			if err != nil {
 				fmt.Printf("Worker running fail, err=%v\n", err)
 			}
-			args := &UpdateTaskStatusArgs{}
+			args := &UpdateTaskStatusArgs{
+				TaskId:     reply.Task.ID,
+				TaskStatus: TaskStatusDone,
+				TaskType:   reply.Task.Type,
+			}
 			reply := &UpdateTaskStatusReply{}
 			ok = call("Coordinator.UpdateTaskStatus", args, reply)
 			if !ok {
 				continue
 			}
 		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
-func StartTask(task *Task, nReduce int32, mapf func(string, string) []KeyValue, reducef func(string, []string) string) error {
+func StartTask(task *Task, nReduce int, mapf func(string, string) []KeyValue, reducef func(string, []string) string) error {
 	switch task.Type {
 	case TaskTypeMap:
 		return StartMapTask(task, nReduce, mapf)
@@ -66,7 +73,8 @@ func StartTask(task *Task, nReduce int32, mapf func(string, string) []KeyValue, 
 	return nil
 }
 
-func StartMapTask(task *Task, nReduce int32, mapf func(string, string) []KeyValue) error {
+func StartMapTask(task *Task, nReduce int, mapf func(string, string) []KeyValue) error {
+	fmt.Printf("MapTask[%v] begin...\n", task.ID)
 	file, err := os.Open(task.FileName)
 	if err != nil {
 		return fmt.Errorf("StartMapTask fail, err=%w", err)
@@ -87,9 +95,10 @@ func StartMapTask(task *Task, nReduce int32, mapf func(string, string) []KeyValu
 	}
 	for _, kv := range kva {
 		idx := ihash(kv.Key) % int(nReduce)
-		_, err := files[idx].WriteString(fmt.Sprintf("%v %v\n", kv.Key, kv.Value))
+		enc := json.NewEncoder(files[idx])
+		err := enc.Encode(&kv)
 		if err != nil {
-			return fmt.Errorf("StartMapTask fail, err=%w", err)
+			return fmt.Errorf("StartMapTask: json.Encode fail, err=%w", err)
 		}
 	}
 	for i, file := range files {
@@ -97,12 +106,12 @@ func StartMapTask(task *Task, nReduce int32, mapf func(string, string) []KeyValu
 			return fmt.Errorf("StartMapTask fail, err=%w", err)
 		}
 	}
-	fmt.Printf("StartMapTask Success!!!\n")
+	fmt.Printf("MapTask[%v] Success!!!\n", task.ID)
 
 	return nil
 }
 
-func StartReduceTask(task *Task, nReduce int32, reducef func(string, []string) string) error {
+func StartReduceTask(task *Task, nReduce int, reducef func(string, []string) string) error {
 	fmt.Printf("call StartReduceTask\n")
 	entries, err := os.ReadDir("./")
 	if err != nil {
@@ -115,15 +124,23 @@ func StartReduceTask(task *Task, nReduce int32, reducef func(string, []string) s
 	for _, entry := range entries {
 		if pattern.MatchString(entry.Name()) {
 			file, err := os.Open(entry.Name())
+			// fmt.Println("fileName=", entry.Name())
 			if err != nil {
 				return fmt.Errorf("StartReduceTask fail, err=%w", err)
 			}
+
 			decoder := json.NewDecoder(file)
 			for {
 				var kv KeyValue
-				if err := decoder.Decode(&kv); err != nil {
+				err := decoder.Decode(&kv)
+				if err == io.EOF {
 					break
 				}
+				if err != nil {
+					fmt.Println("StartReduceTask: decoder.Decode fail, err=", err)
+					break
+				}
+				// fmt.Println("k=", kv.Key, "v=", kv.Value)
 				key = kv.Key
 				values = append(values, kv.Value)
 			}
@@ -179,19 +196,20 @@ func CallExample() {
 // usually returns true.
 // returns false if something goes wrong.
 func call(rpcname string, args interface{}, reply interface{}) bool {
-	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	sockname := coordinatorSock()
-	c, err := rpc.DialHTTP("unix", sockname)
+	c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":12345")
+	//sockname := coordinatorSock()
+	//c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
-		log.Fatal("dialing:", err)
+		log.Fatal("call: dialing:", err)
 	}
 	defer c.Close()
 
 	err = c.Call(rpcname, args, reply)
+	fmt.Println("call ", rpcname, "fail, req=", Marshal(args), "resp=", Marshal(reply), "err=", err)
 	if err == nil {
 		return true
 	}
 
-	fmt.Println(err)
+	fmt.Println("call ", rpcname, "fail, req=", Marshal(args), "resp=", Marshal(reply), "err=", err)
 	return false
 }

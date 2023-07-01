@@ -1,12 +1,12 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
-	"os"
 	"sync"
 	"time"
 )
@@ -14,17 +14,17 @@ import (
 type TaskStatus int32
 
 const (
-	TaskStatusNotStart TaskStatus = iota + 1
-	TaskStatusRunning
-	TaskStatusDone
-	TaskStatusFail
+	TaskStatusNotStart TaskStatus = 1
+	TaskStatusRunning  TaskStatus = 2
+	TaskStatusDone     TaskStatus = 3
+	TaskStatusFail     TaskStatus = 4
 )
 
 type TaskType int32
 
 const (
-	TaskTypeMap = iota + 1
-	TaskTypeReduce
+	TaskTypeMap    TaskType = 1
+	TaskTypeReduce TaskType = 2
 )
 
 type Task struct {
@@ -38,6 +38,7 @@ type Coordinator struct {
 	MapTasks    []*Task
 	ReduceTasks []*Task
 	Lock        sync.Mutex
+	NReduce     int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -51,30 +52,39 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
-	fmt.Printf("[GetTask] args=%v", *args)
 	c.Lock.Lock()
 	defer func() {
+		fmt.Println("GetTaskReply=", Marshal(reply.Task))
 		c.Lock.Unlock()
-		fmt.Printf("[GetTask] reply=%v", *reply)
+		// 超时设置为失败
+		go func() {
+			if reply == nil || reply.Task == nil {
+				return
+			}
+			timer := time.NewTimer(time.Second * 10)
+			defer timer.Stop()
+			select {
+			case _ = <-timer.C:
+				c.Lock.Lock()
+				defer c.Lock.Unlock()
+				if reply.Task.Status == TaskStatusRunning {
+					fmt.Println("set timeout success")
+					reply.Task.Status = TaskStatusFail
+				}
+			}
+		}()
 	}()
 	// get map task
 	for _, task := range c.MapTasks {
 		if task.Status == TaskStatusNotStart || task.Status == TaskStatusFail {
-			reply.Task = task
 			task.Status = TaskStatusRunning
+			reply.Task = task
 			reply.Done = false
+			reply.NReduce = c.NReduce
 			return nil
 		}
 	}
-	// map has done, get reduce task
-	for _, task := range c.ReduceTasks {
-		if task.Status == TaskStatusNotStart || task.Status == TaskStatusFail {
-			reply.Done = false
-			reply.Task = task
-			task.Status = TaskStatusRunning
-			return nil
-		}
-	}
+
 	checkDone := func(tasks []*Task) bool {
 		for _, task := range tasks {
 			if task.Status == TaskStatusRunning || task.Status == TaskStatusFail || task.Status == TaskStatusNotStart {
@@ -83,22 +93,23 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		}
 		return true
 	}
-
-	reply.Done = (checkDone(c.ReduceTasks) || checkDone(c.MapTasks))
-
-	// 超时设置为失败
-	go func() {
-		timer := time.NewTimer(time.Second * 10)
-		defer timer.Stop()
-		select {
-		case _ = <-timer.C:
-			c.Lock.Lock()
-			defer c.Lock.Unlock()
-			if reply.Task.Status == TaskStatusRunning {
-				reply.Task.Status = TaskStatusFail
-			}
+	// 此时map存在失败或者运行中的任务
+	if done := checkDone(c.MapTasks); !done {
+		reply.Done = false
+		fmt.Println("MapTaskHasRunning!!!")
+		return nil
+	}
+	// map has done, get reduce task
+	for _, task := range c.ReduceTasks {
+		if task.Status == TaskStatusNotStart || task.Status == TaskStatusFail {
+			reply.Done = false
+			reply.Task = task
+			task.Status = TaskStatusRunning
+			reply.NReduce = c.NReduce
+			return nil
 		}
-	}()
+	}
+	reply.Done = (checkDone(c.ReduceTasks) || checkDone(c.MapTasks))
 
 	return nil
 }
@@ -108,7 +119,7 @@ func (c *Coordinator) UpdateTaskStatus(args *UpdateTaskStatusArgs, reply *Update
 		return c.updateMapTaskStatus(args.TaskId, args.TaskStatus)
 	}
 
-	return c.updateMapTaskStatus(args.TaskId, args.TaskStatus)
+	return c.updateReduceStatus(args.TaskId, args.TaskStatus)
 }
 
 func (c *Coordinator) updateMapTaskStatus(id int32, status TaskStatus) error {
@@ -124,7 +135,7 @@ func (c *Coordinator) updateMapTaskStatus(id int32, status TaskStatus) error {
 	if idx == -1 {
 		return fmt.Errorf("not found map task, task id=%v", id)
 	}
-	fmt.Printf("MapTask[%v] %v->%v", id, c.MapTasks[idx].Status, status)
+	fmt.Printf("MapTask[%v] %v->%v\n", id, c.MapTasks[idx].Status, status)
 	c.MapTasks[idx].Status = status
 
 	return nil
@@ -151,15 +162,19 @@ func (c *Coordinator) updateReduceStatus(id int32, status TaskStatus) error {
 
 // start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
-	rpc.Register(c)
+	err := rpc.Register(c)
+	if err != nil {
+		fmt.Printf("rpc.Register fail, err=%w", err)
+	}
 	rpc.HandleHTTP()
-	//l, e := net.Listen("tcp", ":1234")
-	sockname := coordinatorSock()
-	os.Remove(sockname)
-	l, e := net.Listen("unix", sockname)
+	l, e := net.Listen("tcp", ":12345")
+	//sockname := coordinatorSock()
+	//os.Remove(sockname)
+	//l, e := net.Listen("unix", sockname)
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
+	fmt.Printf("server.Listen success\n")
 	go http.Serve(l, nil)
 }
 
@@ -182,11 +197,13 @@ func (c *Coordinator) Done() bool {
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
+	c := Coordinator{
+		Lock:    sync.Mutex{},
+		NReduce: nReduce,
+	}
 
-	coo := &Coordinator{}
 	for i, fileName := range files {
-		coo.MapTasks = append(coo.MapTasks, &Task{
+		c.MapTasks = append(c.MapTasks, &Task{
 			Status:   TaskStatusNotStart,
 			ID:       int32(i),
 			FileName: fileName,
@@ -195,13 +212,19 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}
 
 	for i := 0; i < nReduce; i++ {
-		coo.ReduceTasks = append(coo.ReduceTasks, &Task{
+		c.ReduceTasks = append(c.ReduceTasks, &Task{
 			Status: TaskStatusNotStart,
 			ID:     int32(i),
 			Type:   TaskTypeReduce,
 		})
 	}
 
+	fmt.Println(Marshal(c))
 	c.server()
 	return &c
+}
+
+func Marshal(i interface{}) string {
+	bytes, _ := json.Marshal(i)
+	return string(bytes)
 }

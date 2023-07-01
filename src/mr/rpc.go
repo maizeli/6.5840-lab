@@ -22,7 +22,7 @@ type GetTaskArgs struct {
 type GetTaskReply struct {
 	Done    bool
 	Task    *Task
-	NReduce int32
+	NReduce int
 }
 
 type UpdateTaskStatusArgs struct {
