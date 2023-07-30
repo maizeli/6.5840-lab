@@ -1,0 +1,23 @@
+15:54:11.692931 raft.go:844: [Init] [S0] lastHeartbeatTime:1696233251692
+15:54:11.693099 raft.go:845: [Init] [S0] electionTimeout:381
+15:54:11.693170 raft.go:844: [Init] [S1] lastHeartbeatTime:1696233251693
+15:54:11.693186 raft.go:845: [Init] [S1] electionTimeout:589
+15:54:11.693224 raft.go:844: [Init] [S2] lastHeartbeatTime:1696233251693
+15:54:11.693236 raft.go:845: [Init] [S2] electionTimeout:294
+15:54:11.992182 raft.go:458: [Election] [1696233251992] [T0] [S2] start election
+15:54:11.992272 raft.go:606: [changeStatus] [1696233251992] [S2] change server status success [Follower]->[Candidate]
+15:54:11.992317 raft.go:502: [Election] [1696233251992] [T1] [S2] send request vote success, begin waiting....
+15:54:11.992814 raft.go:229: [Election] [1696233251992] [T1]->[T0] [S2]->[S1] recv request vote
+15:54:11.992860 raft.go:606: [changeStatus] [1696233251992] [S1] change server status success [Follower]->[Follower]
+15:54:11.992815 raft.go:229: [Election] [1696233251992] [T1]->[T0] [S2]->[S0] recv request vote
+15:54:11.992942 raft.go:606: [changeStatus] [1696233251992] [S0] change server status success [Follower]->[Follower]
+15:54:11.992972 raft.go:233: [Election] [1696233251992] [T1]->[T1] [S2]->[S0] vote for this request
+15:54:11.992878 raft.go:233: [Election] [1696233251992] [T1]->[T1] [S2]->[S1] vote for this request
+15:54:11.993159 raft.go:518: [Election] [1696233251993] [S2] receive vote from [S1]
+15:54:11.993185 raft.go:518: [Election] [1696233251993] [S2] receive vote from [S0]
+15:54:11.993201 raft.go:540: [Election] [1696233251993] [T1] [S2] receive major vote
+15:54:11.993218 raft.go:606: [changeStatus] [1696233251993] [S2] change server status success [Candidate]->[Leader]
+15:54:11.995690 raft.go:737: [HeartBeat] [1696233251995] [S2]->[S0] SendHeartBeat
+15:54:11.995756 raft.go:737: [HeartBeat] [1696233251995] [S2]->[S1] SendHeartBeat
+15:54:11.996077 raft.go:653: [AppendEntries] [1696233251996] [T1] [S2]->[S1] allow AppendEntries
+15:54:11.996078 raft.go:653: [AppendEntries] [1696233251996] [T1] [S2]->[S0] allow AppendEntries
