@@ -83,8 +83,10 @@ type Raft struct {
 	ServerStatus      ServerStatus // 当前状态
 	HeartbeatInterval int          // 每秒发送的心跳包
 	LastHeartbeatTime int64        // 上次心跳时间 单位:ms
-	Logs              []*Log
-	NextIdxMap        sync.Map // 这里每次当选leader时应该被置为当前leader的值？
+	// 2B
+	Logs       []*Log
+	NextIdxMap sync.Map // 这里每次当选leader时应该被置为当前leader的值？
+	ApplyMsgCh chan ApplyMsg
 }
 
 type Log struct {
@@ -315,17 +317,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
-/*
-Start 只是将这条Command应用到本地，只要应用到本地则认为这条Log一定会被复制到所有server上。
-复制这一步骤则由AppendEntries进行？
-
-or
-
-Start会触发当前这条命令的复制，同时AppendEntries也会触发所有未复制命令的复制？
-
-第一种实现简单，但是AppendEntries是定时运行的，所以复制到其他server上是延迟有些大
-*/
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	Logger.Printf("[Start] command =%v", util.JSONMarshal(command))
 	idx := -1
 	term := -1
 	isLeader := true
@@ -335,6 +328,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader = rf.ServerStatus == ServerStatusLeader
 	// 非Leader直接返回
 	if !isLeader {
+		Logger.Printf("[Start] %v [T%v] [S%v] not leader", time.Now().UnixMilli(), rf.Term, rf.me)
+		rf.mu.Unlock()
 		return idx, term, isLeader
 	}
 	idx = len(rf.Logs)
@@ -345,56 +340,81 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Idx:     len(rf.Logs),
 		Command: command,
 	})
-	// logs := rf.Logs
+	rf.ApplyMsgCh <- ApplyMsg{
+		CommandValid: true,
+		Command:      command,
+		CommandIndex: idx, // TODO test中index从1开始，发送消息以及返回给上游都+1，实际存储还是0开始
+	}
+	logs := rf.Logs
 	rf.mu.Unlock()
 
-	// wg := &sync.WaitGroup{}
+	wg := &sync.WaitGroup{}
 	// Leader，开始AppendEntries
-	// cnt := 0
-	// for _, peer := range rf.peers {
-	// i := i
-	// peer := peer
-	// wg.Add(1)
-	// // 这里 term 需要初始化为0，防止第一次同步失败
-	// prevLogIdx, prevLogTerm := -1, 0
-	// if nextIdxAny, ok := rf.NextIdxMap.Load(i); ok {
-	// 	prevLogIdx = nextIdxAny.(int)
-	// }
-	// if len(logs) > 0 {
-	// 	prevLogTerm = logs[len(logs)-1].Term
-	// }
+	cnt := int32(0)
+	for i, peer := range rf.peers {
+		i := i
+		if i == rf.me {
+			continue
+		}
+		peer := peer
+		wg.Add(1)
 
-	// go func() {
-	// 	defer wg.Done()
-	// 	args := &AppendEntriesArgs{
-	// 		Term:      term,
-	// 		LeaderIdx: rf.me,
-	// PrevLogIdx:  prevLogIdx,
-	// PrevLogTerm: prevLogTerm,
-	// Logs:        logs[prevLogIdx:],
-	// }
-	// reply := &AppendEntriesReply{}
-	// res := peer.Call("Raft.AppendEntries", args, reply)
-	// if !res {
-	// 	return
-	// }
-	// // 如果出现并发更新可能会导致leader丢失一部分数据
-	// if reply.Success {
-	// 	cnt++
-	// 	rf.NextIdxMap.Store(i, len(logs))
-	// } else {
-	// 	rf.NextIdxMap.Store(i, prevLogIdx-1)
-	// }
-	// }()
-	// }
+		go func() {
+			defer wg.Done()
+			// 死循环复制
+			for {
+				// 这里 term 需要初始化为0，防止第一次同步失败
+				prevLogIdx, prevLogTerm := -1, -1
+				if nextIdxAny, ok := rf.NextIdxMap.Load(i); ok {
+					prevLogIdx = nextIdxAny.(int) - 1
+				}
+				if len(logs) > 0 && prevLogIdx >= 0 {
+					prevLogTerm = logs[prevLogIdx].Term
+				}
+				args := &AppendEntriesArgs{
+					Term:        term,
+					LeaderIdx:   rf.me,
+					PrevLogIdx:  prevLogIdx,
+					PrevLogTerm: prevLogTerm,
+				}
+				if prevLogIdx+1 >= 0 {
+					args.Logs = logs[prevLogIdx+1:]
+				}
+				Logger.Printf("[Start] send AppendEntries to [S%v] [T%v] args=%v", i, term, util.JSONMarshal(args))
+				reply := &AppendEntriesReply{}
+				res := peer.Call("Raft.AppendEntries", args, reply)
+				if !res {
+					return
+				}
+				// 如果出现并发更新可能会导致leader丢失一部分数据
+				if reply.Success {
+					atomic.AddInt32(&cnt, 1)
+					cnt++
+					rf.NextIdxMap.Store(i, len(logs))
+					Logger.Printf("[Start] %v [T%v] [S%v] send AppendEntries to [S%v] success", time.Now().UnixMilli(), term, rf.me, i)
+					break
+				} else {
+					rf.NextIdxMap.Store(i, prevLogIdx-1)
+					prevLogIdx--
+					Logger.Printf("[Start] %v [T%v] [S%v] send AppendEntries to [S%v] fail, retry", time.Now().UnixMilli(), term, rf.me, i)
+					if prevLogIdx == -1 {
+						Logger.Printf("[Start] %v [T%v] [S%v] prev log idx is -1", time.Now().UnixMilli(), term, rf.me)
+						break
+					}
+				}
+			}
+		}()
+	}
 	// TODO 超时时长待确定
-	// timeOut := util.WaitWithTimeout(wg, time.Second)
-	// if timeOut {
-	// 	Logger.Printf("[Start] %v [T%v] time out", time.Now().UnixMilli(), term)
-	// }
-	// if cnt <= len(rf.peers)/2 {
-	// 	Logger.Printf("[Start] %v [T%v] less than half server aggree command %v", time.Now().UnixMilli(), term, command)
-	// }
+	timeOut := util.WaitWithTimeout(wg, time.Second)
+	if timeOut {
+		Logger.Printf("[Start] %v [T%v] time out", time.Now().UnixMilli(), term)
+	}
+	if int(cnt) <= len(rf.peers)/2 {
+		Logger.Printf("[Start] %v [T%v] less than half server aggree command %v", time.Now().UnixMilli(), term, command)
+	} else {
+		Logger.Printf("[Start] %v [T%v] more than half server aggree command %v", time.Now().UnixMilli(), term, command)
+	}
 
 	return idx, term, isLeader
 }
@@ -473,7 +493,7 @@ func (rf *Raft) StartElection() {
 
 	// 2. 向其他服务器发起投票
 	wg := sync.WaitGroup{}
-	replyChan := make(chan *RequestVoteReply, len(rf.peers)-1)
+	replys := make([]*RequestVoteReply, len(rf.peers))
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
@@ -496,7 +516,7 @@ func (rf *Raft) StartElection() {
 				Logger.Printf("[Election] [%v] [T%v] [S%v]->[S%v] send request vote fail", time.Now().UnixMilli(), rf.Term, rf.me, i)
 				return
 			}
-			replyChan <- reply
+			replys[i] = reply
 		}()
 	}
 	Logger.Printf("[Election] [%v] [T%v] [S%v] send request vote success, begin waiting....", time.Now().UnixMilli(), rf.Term, rf.me)
@@ -505,10 +525,12 @@ func (rf *Raft) StartElection() {
 	// 这里超时不能直接返回,超时时有可能已经收到大部分的投票
 	// 超时时间选择选举超时时间是为了不阻塞下次选举
 	util.WaitWithTimeout(&wg, time.Millisecond*time.Duration(rf.ElectionTimeout))
-	close(replyChan)
 	mp := map[int32]bool{}
 	var maxTerm int
-	for reply := range replyChan {
+	for _, reply := range replys {
+		if reply == nil {
+			continue
+		}
 		if reply.Term > maxTerm {
 			maxTerm = reply.Term
 		}
@@ -650,6 +672,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer func() {
 		switch *result {
 		case AppendEntriesResultSuccess:
+			for _, log := range args.Logs {
+				rf.ApplyMsgCh <- ApplyMsg{
+					CommandValid: true,
+					Command:      log.Command,
+					CommandIndex: log.Idx,
+				}
+			}
 			Logger.Printf("[AppendEntries] [%v] [T%v] [S%v]->[S%v] allow AppendEntries", time.Now().UnixMilli(), args.Term, args.LeaderIdx, rf.me)
 		case AppendEntriesResultDenyTermEqualDiffLeader:
 			Logger.Printf("[AppendEntries] [%v] [T%v]->[T%v] [S%v]->[S%v] [L%v]->[L%v] deny AppendEntries: leader not equal", time.Now().UnixMilli(),
@@ -670,8 +699,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	// Prev Log Term 不合法
-	if len(args.Logs) > 0 && (args.PrevLogIdx > len(rf.Logs)-1 || rf.Logs[args.PrevLogIdx].Term != args.PrevLogTerm) {
+	// Prev Log Term 不合法 当前server不存在PrevLogIdx的Log或者该log term不一致
+	if args.PrevLogIdx >= 0 && (args.PrevLogIdx > len(rf.Logs)-1 || rf.Logs[args.PrevLogIdx].Term != args.PrevLogTerm) {
 		result = util.IntPtr(AppendEntriesResultDenyInvalidPrevLog)
 		return
 	}
@@ -721,7 +750,6 @@ func (rf *Raft) SendHeartBeat() {
 		rf.mu.Lock()
 		status := rf.ServerStatus
 		term := rf.Term
-		logs := rf.Logs
 		rf.mu.Unlock()
 		if status != ServerStatusLeader {
 			continue
@@ -737,23 +765,11 @@ func (rf *Raft) SendHeartBeat() {
 			Logger.Printf("[HeartBeat] [%v] [S%v]->[S%v] SendHeartBeat",
 				time.Now().UnixMilli(), rf.me, i)
 
-			nextIdx := 0
-			v, ok := rf.NextIdxMap.Load(i)
-			if ok {
-				nextIdx = v.(int)
-			}
-			prevLogTerm := -1
-			if nextIdx > 0 {
-				prevLogTerm = logs[nextIdx-1].Term
-			}
 			args := &AppendEntriesArgs{
 				LeaderIdx:   rf.me,
 				Term:        term,
-				PrevLogIdx:  nextIdx - 1,
-				PrevLogTerm: prevLogTerm,
-			}
-			if nextIdx > 0 {
-				args.Logs = logs[nextIdx-1:]
+				PrevLogIdx:  -1,
+				PrevLogTerm: -1,
 			}
 			reply := &AppendEntriesReply{}
 			wg.Add(1)
@@ -764,11 +780,6 @@ func (rf *Raft) SendHeartBeat() {
 					return
 				}
 				replys[i] = reply
-				if reply.Success {
-					rf.NextIdxMap.Store(i, len(logs))
-				} else {
-					rf.NextIdxMap.Store(i, nextIdx-1)
-				}
 			}()
 		}
 		// TODO 这里应该比心跳间隔时间稍微短一点
@@ -841,6 +852,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.LastHeartbeatTime = time.Now().UnixMilli()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.ApplyMsgCh = applyCh
 	Logger.Printf("[Init] [S%v] lastHeartbeatTime:%v", rf.me, rf.LastHeartbeatTime)
 	Logger.Printf("[Init] [S%v] electionTimeout:%v", rf.me, rf.ElectionTimeout)
 

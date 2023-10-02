@@ -134,15 +134,18 @@ func TestBasicAgree2B(t *testing.T) {
 
 	iters := 3
 	for index := 1; index < iters+1; index++ {
+		Logger.Printf("over set up begin ncommitted")
 		nd, _ := cfg.nCommitted(index)
 		if nd > 0 {
 			t.Fatalf("some have committed before Start()")
 		}
+		Logger.Printf("over ncommitted")
 
 		xindex := cfg.one(index*100, servers, false)
 		if xindex != index {
 			t.Fatalf("got index %v but expected %v", xindex, index)
 		}
+		Logger.Printf("over one call")
 	}
 
 	cfg.end()

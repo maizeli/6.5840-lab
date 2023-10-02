@@ -1,0 +1,148 @@
+22:35:50.148312 raft.go:856: [Init] [S0] lastHeartbeatTime:1696257350148
+22:35:50.148482 raft.go:857: [Init] [S0] electionTimeout:510
+22:35:50.148563 raft.go:856: [Init] [S1] lastHeartbeatTime:1696257350148
+22:35:50.148578 raft.go:857: [Init] [S1] electionTimeout:588
+22:35:50.148620 raft.go:856: [Init] [S2] lastHeartbeatTime:1696257350148
+22:35:50.148633 raft.go:857: [Init] [S2] electionTimeout:460
+22:35:50.148686 test_test.go:138: over set up begin ncommitted
+22:35:50.148698 test_test.go:143: over ncommitted
+22:35:50.148708 config.go:564: [Test] one(100) starts 0
+22:35:50.148739 raft.go:321: [Start] command =100
+22:35:50.148752 raft.go:331: [Start] 1696257350148 [T0] [S1] not leader
+22:35:50.148763 config.go:576: [Test] one(100) starts 0, res:false
+22:35:50.148774 raft.go:321: [Start] command =100
+22:35:50.148787 raft.go:331: [Start] 1696257350148 [T0] [S2] not leader
+22:35:50.148797 config.go:576: [Test] one(100) starts 0, res:false
+22:35:50.148807 raft.go:321: [Start] command =100
+22:35:50.148816 raft.go:331: [Start] 1696257350148 [T0] [S0] not leader
+22:35:50.148826 config.go:576: [Test] one(100) starts 0, res:false
+22:35:50.199902 config.go:564: [Test] one(100) starts 51
+22:35:50.199984 raft.go:321: [Start] command =100
+22:35:50.200009 raft.go:331: [Start] 1696257350200 [T0] [S1] not leader
+22:35:50.200029 config.go:576: [Test] one(100) starts 51, res:false
+22:35:50.200048 raft.go:321: [Start] command =100
+22:35:50.200064 raft.go:331: [Start] 1696257350200 [T0] [S2] not leader
+22:35:50.200125 config.go:576: [Test] one(100) starts 51, res:false
+22:35:50.200147 raft.go:321: [Start] command =100
+22:35:50.200164 raft.go:331: [Start] 1696257350200 [T0] [S0] not leader
+22:35:50.200180 config.go:576: [Test] one(100) starts 51, res:false
+22:35:50.250368 config.go:564: [Test] one(100) starts 101
+22:35:50.250449 raft.go:321: [Start] command =100
+22:35:50.250510 raft.go:331: [Start] 1696257350250 [T0] [S1] not leader
+22:35:50.250533 config.go:576: [Test] one(100) starts 101, res:false
+22:35:50.250575 raft.go:321: [Start] command =100
+22:35:50.250592 raft.go:331: [Start] 1696257350250 [T0] [S2] not leader
+22:35:50.250609 config.go:576: [Test] one(100) starts 101, res:false
+22:35:50.250628 raft.go:321: [Start] command =100
+22:35:50.250644 raft.go:331: [Start] 1696257350250 [T0] [S0] not leader
+22:35:50.250666 config.go:576: [Test] one(100) starts 101, res:false
+22:35:50.301767 config.go:564: [Test] one(100) starts 153
+22:35:50.301875 raft.go:321: [Start] command =100
+22:35:50.301910 raft.go:331: [Start] 1696257350301 [T0] [S1] not leader
+22:35:50.301937 config.go:576: [Test] one(100) starts 153, res:false
+22:35:50.302037 raft.go:321: [Start] command =100
+22:35:50.302061 raft.go:331: [Start] 1696257350302 [T0] [S2] not leader
+22:35:50.302084 config.go:576: [Test] one(100) starts 153, res:false
+22:35:50.302109 raft.go:321: [Start] command =100
+22:35:50.302131 raft.go:331: [Start] 1696257350302 [T0] [S0] not leader
+22:35:50.302154 config.go:576: [Test] one(100) starts 153, res:false
+22:35:50.352471 config.go:564: [Test] one(100) starts 203
+22:35:50.352611 raft.go:321: [Start] command =100
+22:35:50.352662 raft.go:331: [Start] 1696257350352 [T0] [S1] not leader
+22:35:50.352691 config.go:576: [Test] one(100) starts 203, res:false
+22:35:50.352719 raft.go:321: [Start] command =100
+22:35:50.352742 raft.go:331: [Start] 1696257350352 [T0] [S2] not leader
+22:35:50.352765 config.go:576: [Test] one(100) starts 204, res:false
+22:35:50.352790 raft.go:321: [Start] command =100
+22:35:50.352812 raft.go:331: [Start] 1696257350352 [T0] [S0] not leader
+22:35:50.352834 config.go:576: [Test] one(100) starts 204, res:false
+22:35:50.403922 config.go:564: [Test] one(100) starts 255
+22:35:50.404057 raft.go:321: [Start] command =100
+22:35:50.404098 raft.go:331: [Start] 1696257350404 [T0] [S1] not leader
+22:35:50.404140 config.go:576: [Test] one(100) starts 255, res:false
+22:35:50.404168 raft.go:321: [Start] command =100
+22:35:50.404191 raft.go:331: [Start] 1696257350404 [T0] [S2] not leader
+22:35:50.404215 config.go:576: [Test] one(100) starts 255, res:false
+22:35:50.404285 raft.go:321: [Start] command =100
+22:35:50.404306 raft.go:331: [Start] 1696257350404 [T0] [S0] not leader
+22:35:50.404325 config.go:576: [Test] one(100) starts 255, res:false
+22:35:50.454953 config.go:564: [Test] one(100) starts 306
+22:35:50.455037 raft.go:321: [Start] command =100
+22:35:50.455062 raft.go:331: [Start] 1696257350455 [T0] [S1] not leader
+22:35:50.455082 config.go:576: [Test] one(100) starts 306, res:false
+22:35:50.455103 raft.go:321: [Start] command =100
+22:35:50.455120 raft.go:331: [Start] 1696257350455 [T0] [S2] not leader
+22:35:50.455147 config.go:576: [Test] one(100) starts 306, res:false
+22:35:50.455170 raft.go:321: [Start] command =100
+22:35:50.455187 raft.go:331: [Start] 1696257350455 [T0] [S0] not leader
+22:35:50.455204 config.go:576: [Test] one(100) starts 306, res:false
+22:35:50.506082 config.go:564: [Test] one(100) starts 357
+22:35:50.506149 raft.go:321: [Start] command =100
+22:35:50.506164 raft.go:331: [Start] 1696257350506 [T0] [S1] not leader
+22:35:50.506175 config.go:576: [Test] one(100) starts 357, res:false
+22:35:50.506184 raft.go:321: [Start] command =100
+22:35:50.506192 raft.go:331: [Start] 1696257350506 [T0] [S2] not leader
+22:35:50.506200 config.go:576: [Test] one(100) starts 357, res:false
+22:35:50.506237 raft.go:321: [Start] command =100
+22:35:50.506245 raft.go:331: [Start] 1696257350506 [T0] [S0] not leader
+22:35:50.506253 config.go:576: [Test] one(100) starts 357, res:false
+22:35:50.556335 config.go:564: [Test] one(100) starts 407
+22:35:50.556465 raft.go:321: [Start] command =100
+22:35:50.556521 raft.go:331: [Start] 1696257350556 [T0] [S1] not leader
+22:35:50.556546 config.go:576: [Test] one(100) starts 407, res:false
+22:35:50.556568 raft.go:321: [Start] command =100
+22:35:50.556585 raft.go:331: [Start] 1696257350556 [T0] [S2] not leader
+22:35:50.556611 config.go:576: [Test] one(100) starts 407, res:false
+22:35:50.556632 raft.go:321: [Start] command =100
+22:35:50.556649 raft.go:331: [Start] 1696257350556 [T0] [S0] not leader
+22:35:50.556693 config.go:576: [Test] one(100) starts 407, res:false
+22:35:50.607029 config.go:564: [Test] one(100) starts 458
+22:35:50.607153 raft.go:321: [Start] command =100
+22:35:50.607174 raft.go:331: [Start] 1696257350607 [T0] [S1] not leader
+22:35:50.607189 config.go:576: [Test] one(100) starts 458, res:false
+22:35:50.607204 raft.go:321: [Start] command =100
+22:35:50.607216 raft.go:331: [Start] 1696257350607 [T0] [S2] not leader
+22:35:50.607228 config.go:576: [Test] one(100) starts 458, res:false
+22:35:50.607241 raft.go:321: [Start] command =100
+22:35:50.607252 raft.go:331: [Start] 1696257350607 [T0] [S0] not leader
+22:35:50.607264 config.go:576: [Test] one(100) starts 458, res:false
+22:35:50.657704 config.go:564: [Test] one(100) starts 508
+22:35:50.657781 raft.go:321: [Start] command =100
+22:35:50.657806 raft.go:331: [Start] 1696257350657 [T0] [S1] not leader
+22:35:50.657827 config.go:576: [Test] one(100) starts 509, res:false
+22:35:50.657846 raft.go:321: [Start] command =100
+22:35:50.657863 raft.go:331: [Start] 1696257350657 [T0] [S2] not leader
+22:35:50.657880 config.go:576: [Test] one(100) starts 509, res:false
+22:35:50.657899 raft.go:321: [Start] command =100
+22:35:50.657915 raft.go:331: [Start] 1696257350657 [T0] [S0] not leader
+22:35:50.657932 config.go:576: [Test] one(100) starts 509, res:false
+22:35:50.660163 raft.go:478: [Election] [1696257350660] [T0] [S2] start election
+22:35:50.660297 raft.go:628: [changeStatus] [1696257350660] [S2] change server status success [Follower]->[Candidate]
+22:35:50.660359 raft.go:522: [Election] [1696257350660] [T1] [S2] send request vote success, begin waiting....
+22:35:50.661068 raft.go:231: [Election] [1696257350661] [T1]->[T0] [S2]->[S0] recv request vote
+22:35:50.661123 raft.go:628: [changeStatus] [1696257350661] [S0] change server status success [Follower]->[Follower]
+22:35:50.661147 raft.go:235: [Election] [1696257350661] [T1]->[T1] [S2]->[S0] vote for this request
+22:35:50.661147 raft.go:231: [Election] [1696257350661] [T1]->[T0] [S2]->[S1] recv request vote
+22:35:50.661213 raft.go:628: [changeStatus] [1696257350661] [S1] change server status success [Follower]->[Follower]
+22:35:50.661274 raft.go:235: [Election] [1696257350661] [T1]->[T1] [S2]->[S1] vote for this request
+22:35:50.661436 raft.go:540: [Election] [1696257350661] [S2] receive vote from [S0]
+22:35:50.661460 raft.go:540: [Election] [1696257350661] [S2] receive vote from [S1]
+22:35:50.661476 raft.go:562: [Election] [1696257350661] [T1] [S2] receive major vote
+22:35:50.661493 raft.go:628: [changeStatus] [1696257350661] [S2] change server status success [Candidate]->[Leader]
+22:35:50.709018 config.go:564: [Test] one(100) starts 560
+22:35:50.709114 raft.go:321: [Start] command =100
+22:35:50.709178 raft.go:331: [Start] 1696257350709 [T1] [S1] not leader
+22:35:50.709198 config.go:576: [Test] one(100) starts 560, res:false
+22:35:50.709218 raft.go:321: [Start] command =100
+22:35:50.709564 raft.go:383: [Start] send AppendEntries to [S1] [T1] args={"Term":1,"LeaderIdx":2,"PrevLogIdx":-1,"PrevLogTerm":-1,"Logs":[{"Term":1,"Idx":0,"Command":100}]}
+22:35:50.709630 raft.go:383: [Start] send AppendEntries to [S0] [T1] args={"Term":1,"LeaderIdx":2,"PrevLogIdx":-1,"PrevLogTerm":-1,"Logs":[{"Term":1,"Idx":0,"Command":100}]}
+22:35:50.710059 raft.go:628: [changeStatus] [1696257350710] [S1] change server status success [Follower]->[Follower]
+22:35:50.710094 raft.go:682: [AppendEntries] [1696257350710] [T1] [S2]->[S1] allow AppendEntries
+22:35:50.710063 raft.go:628: [changeStatus] [1696257350710] [S0] change server status success [Follower]->[Follower]
+22:35:50.710146 raft.go:682: [AppendEntries] [1696257350710] [T1] [S2]->[S0] allow AppendEntries
+22:35:50.710192 raft.go:394: [Start] 1696257350710 [T1] [S2] send AppendEntries to [S1] success
+22:35:50.710250 raft.go:394: [Start] 1696257350710 [T1] [S2] send AppendEntries to [S0] success
+22:35:50.710282 raft.go:416: [Start] 1696257350710 [T1] more than half server aggree command 100
+22:35:50.710300 config.go:576: [Test] one(100) starts 561, res:true
+22:35:50.710315 config.go:578: [Test] one(100) ends 561, get index:0
+22:35:50.710326 config.go:586: [Test] Start success, begin get command...

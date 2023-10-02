@@ -561,6 +561,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 	starts := 0
 	for time.Since(t0).Seconds() < 10 && cfg.checkFinished() == false {
 		// try all the servers, maybe one is the leader.
+		Logger.Printf("[Test] one(%v) starts %v\n", cmd, time.Since(t0).Milliseconds())
 		index := -1
 		for si := 0; si < cfg.n; si++ {
 			starts = (starts + 1) % cfg.n
@@ -572,7 +573,9 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			cfg.mu.Unlock()
 			if rf != nil {
 				index1, _, ok := rf.Start(cmd)
+				Logger.Printf("[Test] one(%v) starts %v, res:%v\n", cmd, time.Since(t0).Milliseconds(), ok)
 				if ok {
+					Logger.Printf("[Test] one(%v) ends %v, get index:%v\n", cmd, time.Since(t0).Milliseconds(), index1)
 					index = index1
 					break
 				}
@@ -580,6 +583,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 		}
 
 		if index != -1 {
+			Logger.Printf("[Test] Start success, begin get command...")
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
 			t1 := time.Now()

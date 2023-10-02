@@ -1,9 +1,0 @@
-15:48:21.434670 raft.go:840: [Init] [S0] lastHeartbeatTime:1696232901434
-15:48:21.434864 raft.go:841: [Init] [S0] electionTimeout:276
-15:48:21.434938 raft.go:840: [Init] [S1] lastHeartbeatTime:1696232901434
-15:48:21.434960 raft.go:841: [Init] [S1] electionTimeout:487
-15:48:21.435033 raft.go:840: [Init] [S2] lastHeartbeatTime:1696232901435
-15:48:21.435058 raft.go:841: [Init] [S2] electionTimeout:533
-15:48:21.873854 raft.go:458: [Election] [1696232901873] [T0] [S0] start election
-15:48:21.874007 raft.go:604: [changeStatus] [1696232901873] [S0] change server status success [Follower]->[Candidate]
-15:48:21.874097 raft.go:500: [Election] [1696232901874] [T1] [S0] send request vote success, begin waiting....

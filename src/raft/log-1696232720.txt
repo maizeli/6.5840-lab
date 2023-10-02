@@ -1,6 +1,0 @@
-15:45:20.323925 raft.go:840: [Init] [S0] lastHeartbeatTime:1696232720323
-15:45:20.324108 raft.go:841: [Init] [S0] electionTimeout:237
-15:45:20.324182 raft.go:840: [Init] [S1] lastHeartbeatTime:1696232720324
-15:45:20.324197 raft.go:841: [Init] [S1] electionTimeout:512
-15:45:20.324237 raft.go:840: [Init] [S2] lastHeartbeatTime:1696232720324
-15:45:20.324249 raft.go:841: [Init] [S2] electionTimeout:224
