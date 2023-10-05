@@ -185,6 +185,8 @@ func TestRPCBytes2B(t *testing.T) {
 }
 
 // test just failure of followers.
+// TODO 需要维护一个commited idx，leader需要等待多数server复制完成后，更新此index，并且再向channel中发送消息，其余server等待leader的AppendEntries？
+// 这中间的时间差，如果此时判断是否有提交怎么办？
 func TestFollowerFailure2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -242,6 +244,7 @@ func TestLeaderFailure2B(t *testing.T) {
 	// disconnect the first leader.
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect(leader1)
+	Logger.Printf("[Test] disconnect leader1 %v", leader1)
 
 	// the remaining followers should elect
 	// a new leader.
@@ -252,6 +255,7 @@ func TestLeaderFailure2B(t *testing.T) {
 	// disconnect the new leader.
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
+	Logger.Printf("[Test] disconnect leader2 %v", leader2)
 
 	// submit a command to each server.
 	for i := 0; i < servers; i++ {
