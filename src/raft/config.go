@@ -147,7 +147,6 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	v := m.Command
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
-			log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
 			// some server has already committed a different value for this entry!
 			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
 				m.CommandIndex, i, m.Command, j, old)
@@ -432,7 +431,9 @@ func (cfg *config) setlongreordering(longrel bool) {
 //
 // try a few times in case re-elections are needed.
 func (cfg *config) checkOneLeader() int {
+	defer Logger.Printf("[Test] checkOneLeader over")
 	for iters := 0; iters < 10; iters++ {
+		Logger.Printf("[Test] checkOneLeader run %v", iters)
 		ms := 450 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
