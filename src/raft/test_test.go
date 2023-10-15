@@ -126,6 +126,7 @@ func TestManyElections2A(t *testing.T) {
 }
 
 func TestBasicAgree2B(t *testing.T) {
+	Logger.Printf("TestBasicAgree2B begin")
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -134,26 +135,25 @@ func TestBasicAgree2B(t *testing.T) {
 
 	iters := 3
 	for index := 1; index < iters+1; index++ {
-		Logger.Printf("over set up begin ncommitted")
 		nd, _ := cfg.nCommitted(index)
 		if nd > 0 {
 			t.Fatalf("some have committed before Start()")
 		}
-		Logger.Printf("over ncommitted")
 
 		xindex := cfg.one(index*100, servers, false)
 		if xindex != index {
 			t.Fatalf("got index %v but expected %v", xindex, index)
 		}
-		Logger.Printf("over one call")
 	}
 
 	cfg.end()
+	Logger.Printf("TestBasicAgree2B end")
 }
 
 // check, based on counting bytes of RPCs, that
 // each command is sent to each peer just once.
 func TestRPCBytes2B(t *testing.T) {
+	Logger.Printf("TestRPCBytes2B begin")
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -182,12 +182,14 @@ func TestRPCBytes2B(t *testing.T) {
 	}
 
 	cfg.end()
+	Logger.Printf("TestRPCBytes2B end")
 }
 
 // test just failure of followers.
 // TODO 需要维护一个commited idx，leader需要等待多数server复制完成后，更新此index，并且再向channel中发送消息，其余server等待leader的AppendEntries？
 // 这中间的时间差，如果此时判断是否有提交怎么办？
 func TestFollowerFailure2B(t *testing.T) {
+	Logger.Printf("TestFollowerFailure2B begin")
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -229,10 +231,12 @@ func TestFollowerFailure2B(t *testing.T) {
 	}
 
 	cfg.end()
+	Logger.Printf("TestFollowerFailure2B end")
 }
 
 // test just failure of leaders.
 func TestLeaderFailure2B(t *testing.T) {
+	Logger.Printf("TestLeaderFailure2B begin")
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -271,11 +275,13 @@ func TestLeaderFailure2B(t *testing.T) {
 	}
 
 	cfg.end()
+	Logger.Printf("TestLeaderFailure2B end")
 }
 
 // test that a follower participates after
 // disconnect and re-connect.
 func TestFailAgree2B(t *testing.T) {
+	Logger.Printf("TestFailAgree2B begin")
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -307,9 +313,11 @@ func TestFailAgree2B(t *testing.T) {
 	cfg.one(107, servers, true)
 
 	cfg.end()
+	Logger.Printf("TestFailAgree2B end")
 }
 
 func TestFailNoAgree2B(t *testing.T) {
+	Logger.Printf("TestFailNoAgree2B begin")
 	servers := 5
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -358,9 +366,11 @@ func TestFailNoAgree2B(t *testing.T) {
 	cfg.one(1000, servers, true)
 
 	cfg.end()
+	Logger.Printf("TestFailNoAgree2B end")
 }
 
 func TestConcurrentStarts2B(t *testing.T) {
+	Logger.Printf("TestConcurrentStarts2B begin")
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -459,9 +469,11 @@ loop:
 	}
 
 	cfg.end()
+	Logger.Printf("TestConcurrentStarts2B end")
 }
 
 func TestRejoin2B(t *testing.T) {
+	Logger.Printf("TestRejoin2B begin")
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -497,9 +509,11 @@ func TestRejoin2B(t *testing.T) {
 	cfg.one(105, servers, true)
 
 	cfg.end()
+	Logger.Printf("TestRejoin2B end")
 }
 
 func TestBackup2B(t *testing.T) {
+	Logger.Printf("TestBackup2B begin")
 	servers := 5
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -569,9 +583,11 @@ func TestBackup2B(t *testing.T) {
 	cfg.one(rand.Int(), servers, true)
 
 	cfg.end()
+	Logger.Printf("TestBackup2B end")
 }
 
 func TestCount2B(t *testing.T) {
+	Logger.Printf("TestCount2B begin")
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -679,6 +695,7 @@ loop:
 	}
 
 	cfg.end()
+	Logger.Printf("TestCount2B end")
 }
 
 func TestPersist12C(t *testing.T) {

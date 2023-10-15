@@ -237,7 +237,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	Logger.Printf("[RequestVote] [S%v] [T%v] recv [S%v] [T%v] RequestVote", rf.me, rf.Term, args.ServerIdx, rf.me)
 	defer func() {
 		if reply.IsVote {
-			Logger.Printf("[RequestVote] [S%v] [T%v] vote for [S%v] [T%v] RequestVote", rf.me, rf.Term, args.ServerIdx, rf.me)
+			Logger.Printf("[RequestVote] [S%v] [T%v] vote for [S%v] [T%v] RequestVote", rf.me, rf.Term, args.ServerIdx, rf.Term)
 		} else {
 			Logger.Printf("[RequestVote] [S%v] [T%v] deny [S%v] [T%v] RequestVote:%v", rf.me, rf.Term, args.ServerIdx, rf.me, reply.DenyReason)
 		}
@@ -480,9 +480,9 @@ func (rf *Raft) CommitIdx(idx int) {
 		Logger.Printf("[CommitIdx] [S%v] [T%v] commit idx %v > len(rf.Logs) %v, not need commit", rf.me, rf.Term, idx, len(rf.Logs))
 		return
 	}
-	Logger.Printf("[CommitIdx]  [S%v] [T%v] begin commit idx %v", rf.me, rf.Term, idx)
+	Logger.Printf("[CommitIdx] [S%v] [T%v] begin commit idx %v", rf.me, rf.Term, idx)
 	for i := rf.CommittedIdx + 1; i <= idx; i++ {
-		Logger.Printf("[CommitIdx] [S%v] [T%v] send apply msg:%v", rf.me, rf.Term, i+1)
+		// Logger.Printf("[CommitIdx] [S%v] [T%v] send apply msg:%v", rf.me, rf.Term, i+1)
 		rf.ApplyMsgCh <- ApplyMsg{
 			CommandValid: true,
 			Command:      rf.Logs[i].Command,
@@ -839,7 +839,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // SendHeartBeat
 // TODO 发送心跳的时候也要携带 prevLogIdx prevLogTerm，因为收到消息的server会提交日志，所以需要通过prevLogIdx/Term保证日志的一致
 func (rf *Raft) SendHeartBeat() {
+	debugIdx := 0
 	for rf.killed() == false {
+		debugIdx++
 		time.Sleep(time.Duration(rf.HeartbeatInterval * int(time.Millisecond)))
 		rf.mu.Lock()
 		status := rf.ServerStatus
@@ -876,7 +878,7 @@ func (rf *Raft) SendHeartBeat() {
 				LeaderCommitIdx: committedIdx,
 			}
 
-			Logger.Printf("[HeartBeat] [S%v]->[S%v] args=%v", rf.me, i, util.JSONMarshal(args))
+			Logger.Printf("[HeartBeat] [S%v]->[S%v] debugIDx=%v args=%v", rf.me, i, debugIdx, util.JSONMarshal(args))
 			reply := &AppendEntriesReply{}
 			wg.Add(1)
 			go func() {
@@ -915,12 +917,12 @@ func (rf *Raft) SendHeartBeat() {
 			continue
 		}
 		if count >= len(rf.peers)/2 {
-			Logger.Printf("[HeartBeat] [S%v] receive major heartbeat", rf.me)
+			Logger.Printf("[HeartBeat] [S%v] debugIdx=%v receive major heartbeat", rf.me, debugIdx)
 			rf.mu.Lock()
 			rf.changeStatus(ServerStatusLeader, rf.me)
 			rf.mu.Unlock()
 		} else {
-			Logger.Printf("[HeartBeat] [S%v] not receive major heartbeat", rf.me)
+			Logger.Printf("[HeartBeat] [S%v] debugIdx=%v not receive major heartbeat", rf.me, debugIdx)
 			rf.mu.Lock()
 			rf.changeStatus(ServerStatusCandidate, rf.me)
 			rf.mu.Unlock()
