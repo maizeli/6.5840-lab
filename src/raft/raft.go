@@ -436,7 +436,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}()
 	}
 	// TODO 超时时长待确定
-	timeOut := util.WaitWithTimeout(wg, time.Second)
+	timeOut := util.WaitWithTimeout(wg, time.Duration(rf.ElectionTimeout)*time.Millisecond)
 	if timeOut {
 		Logger.Printf("[Start] [S%v] [T%v] time out", rf.me, term)
 	} else {
@@ -598,7 +598,6 @@ func (rf *Raft) StartElection() {
 	}
 	Logger.Printf("[Election] [S%v] [T%v] send all RequestVote success, begin waiting....", rf.me, localTerm)
 	// 这里不能傻傻等待所有服务器响应，只要超过一半的server投票，就应该停止
-	// 这里超时不能直接返回,超时时有可能已经收到大部分的投票
 	voteCount, flag, tCh := 0, false, time.After(time.Millisecond*time.Duration(rf.ElectionTimeout)*1/2)
 	for {
 		if flag {
@@ -653,15 +652,14 @@ func (rf *Raft) StartElection() {
 		rf.changeStatus(ServerStatusFollower, -1, false)
 		return
 	}
+	// 投票过程已经重新变为 Follower
+	if rf.ServerStatus == ServerStatusFollower {
+		Logger.Printf("[Election] [S%v] [T%v] already become a follower", rf.me, rf.Term)
+		return
+	}
 	// 包含等于:因为自己会给自己投一票
 	if voteCount >= len(rf.peers)/2 {
 		Logger.Printf("[Election] [S%v] [T%v] receive major vote[%v]", rf.me, rf.Term, voteCount)
-
-		// 投票过程已经重新变为 Follower
-		if rf.ServerStatus == ServerStatusFollower {
-			Logger.Printf("[Election] [S%v] [T%v] already become a follower", rf.me, rf.Term)
-			return
-		}
 		_ = rf.changeStatus(ServerStatusLeader, rf.me)
 	} else {
 		Logger.Printf("[Election] [S%v] [T%v] not receive enough vote", rf.me, rf.Term)
@@ -892,6 +890,7 @@ func (rf *Raft) SendHeartBeat() {
 				replyMutx.Unlock()
 			}()
 		}
+		// TODO 这里收到大多数的回应就可以继续保持leader了，不需要等待超时
 		util.WaitWithTimeout(&wg, time.Duration(rf.HeartbeatInterval*int(time.Millisecond))*4/5)
 		count := 0
 		maxTerm := term
