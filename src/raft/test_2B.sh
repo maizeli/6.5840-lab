@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # test_names=("TestBasicAgree2B" "TestRPCBytes2B" "TestFollowerFailure2B" "TestLeaderFailure2B" "TestFailAgree2B" "TestFailNoAgree2B" "TestConcurrentStarts2B" "TestRejoin2B" "TestBackup2B" "TestCount2B")
-test_names=("TestFollowerFailure2B" "TestLeaderFailure2B" "TestFailAgree2B" "TestFailNoAgree2B" "TestConcurrentStarts2B" "TestRejoin2B" "TestBackup2B" "TestCount2B")
+# test_names=("TestFollowerFailure2B" "TestLeaderFailure2B" "TestFailAgree2B" "TestFailNoAgree2B" "TestConcurrentStarts2B" "TestRejoin2B" "TestBackup2B" "TestCount2B")
+test_names=("TestFailNoAgree2B" "TestConcurrentStarts2B" "TestRejoin2B" "TestBackup2B" "TestCount2B")
 
 j=0
 total=${#test_names[*]}

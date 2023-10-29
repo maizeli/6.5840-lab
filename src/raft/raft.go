@@ -361,13 +361,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// 记录当前Term
 	term = rf.Term
 	// 将command添加到leader本地状态机
-	rf.Logs[idx] = &Log{
+	log := &Log {
 		Term:    term,
 		Idx:     idx,
 		Command: command,
 	}
+	rf.Logs[idx] = log
 	// 记录当前Log
-	logs := rf.Logs
+	// logs := rf.Logs
 	rf.mu.Unlock()
 
 	wg := &sync.WaitGroup{}
@@ -388,10 +389,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				if rf.killed() {
 					return
 				}
+				rf.mu.Lock()
 				// 获取对应Follower该从哪一条Log开始复制
 				prevLogIdx, prevLogTerm := atomic.LoadInt32(&rf.NextIdxs[i])-1, -1
-				if len(logs) > 0 && prevLogIdx >= 0 {
-					prevLogTerm = logs[prevLogIdx].Term
+				logLen := len(rf.Logs)
+				if len(rf.Logs) > 0 && prevLogIdx >= 0 {
+					prevLogTerm = rf.Logs[prevLogIdx].Term
 				}
 				args := &AppendEntriesArgs{
 					Term:            term,
@@ -401,9 +404,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					LeaderCommitIdx: committedIdx,
 				}
 				if prevLogIdx+1 >= 0 {
-					args.Logs = logs[prevLogIdx+1:]
+					args.Logs = rf.Logs[prevLogIdx+1:]
 				}
+				rf.mu.Unlock()
+
 				Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v] args=%v, debugTime=%v", rf.me, term, i, util.JSONMarshal(args), now)
+
 				reply := &AppendEntriesReply{}
 				res := peer.Call("Raft.AppendEntries", args, reply)
 				if !res {
@@ -420,9 +426,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				rf.mu.Unlock()
 				// 如果出现并发更新可能会导致leader丢失一部分数据，但是问题不大只是增加同步的时间
 				if reply.Success {
+					rf.mu.Lock()
 					atomic.AddInt32(&cnt, 1)
-					atomic.StoreInt32(&rf.NextIdxs[i], int32(len(logs)))
+					atomic.StoreInt32(&rf.NextIdxs[i], int32(logLen))
+					atomic.StoreInt32(&rf.MatchIdxs[i], int32(logLen))
 					Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v] success, debugTime=%v", rf.me, term, i, now)
+					rf.mu.Unlock()
 					break
 				} else {
 					// 这里失败了可能是term不合法
@@ -431,12 +440,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					}
 					// 因为前一条Log不匹配，NextLogIdx-1，再试下
 					Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v] fail, log idx -1 and retry, debugTime=%v", rf.me, term, i, now)
-					atomic.StoreInt32(&rf.NextIdxs[i], prevLogIdx-1)
-					if prevLogIdx == -1 {
+					if prevLogIdx <= -1 {
 						Logger.Printf("[Start] [S%v] [T%v] prev log idx is -1, break, debugTime=%v", rf.me, term, now)
 						break
 					}
-					prevLogIdx--
+					atomic.StoreInt32(&rf.NextIdxs[i], prevLogIdx)
 				}
 			}
 		}()
@@ -789,13 +797,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			Logger.Printf("[AppendEntries] [S%v] [T%v]->[T%v] allow [S%v] AppendEntries", rf.me, args.Term, rf.Term, args.LeaderIdx)
 		case AppendEntriesResultDenyTermEqualDiffLeader:
 			Logger.Printf("[AppendEntries] [S%v] [T%v]->[T%v] [L%v]->[L%v] deny [S%v] AppendEntries: leader not equal", rf.me,
-				args.Term, rf.Term, args.LeaderIdx, localLeaderIdx, args.Term)
+				args.Term, rf.Term, args.LeaderIdx, localLeaderIdx, args.LeaderIdx)
 		case AppendEntriesResultDenyTermEqualNowLeader:
 			Logger.Printf("[AppendEntries] [S%v] [T%v]->[T%v] deney [S%v] AppendEntries:term equal but now is leader", rf.me, args.Term, rf.Term, args.LeaderIdx)
 		case AppendEntriesResultDenyTermLess:
 			Logger.Printf("[AppendEntries] [S%v] [T%v]->[T%v] deny [S%v] AppendEntries: term less than current term", rf.me, args.Term, rf.Term, args.LeaderIdx)
 		case AppendEntriesResultDenyInvalidPrevLog:
-			Logger.Printf("[AppendEntries] [S%v] [T%v]->[T%v] deny [S%v] AppendEntries: prev lognot equal [I%v]!=[I%v]", rf.me, args.Term, rf.Term, args.LeaderIdx, args.PrevLogIdx, len(rf.Logs)-1)
+			Logger.Printf("[AppendEntries] [S%v] [T%v]->[T%v] deny [S%v] AppendEntries: prev lognot equal [I%v]!=[I%v] [%v]->[%v]", rf.me, args.Term, rf.Term, args.LeaderIdx, args.PrevLogIdx, len(rf.Logs)-1, util.JSONMarshal(rf.Logs), util.JSONMarshal(args))
 		default:
 			Logger.Printf("[AppendEntries] [S%v] [T%v]->[T%v] not found reason", rf.me, args.Term, rf.Term)
 		}
@@ -856,9 +864,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // SendHeartBeat
 // TODO 发送心跳的时候也要携带 prevLogIdx prevLogTerm，因为收到消息的server会提交日志，所以需要通过prevLogIdx/Term保证日志的一致
 func (rf *Raft) SendHeartBeat() {
-	debugIdx := 0
 	for rf.killed() == false {
-		debugIdx++
 		time.Sleep(time.Duration(rf.HeartbeatInterval * int(time.Millisecond)))
 		rf.mu.Lock()
 		status := rf.ServerStatus
@@ -874,45 +880,87 @@ func (rf *Raft) SendHeartBeat() {
 		replys := make([]*AppendEntriesReply, len(rf.peers))
 		replyMutx := &sync.Mutex{}
 		wg := sync.WaitGroup{}
+		closeCh := make(chan struct{})
 		for i, peer := range rf.peers {
 			if i == rf.me {
 				continue
 			}
 			i, peer := i, peer
 
-			prevLogIdx, prevLogTerm := atomic.LoadInt32(&rf.NextIdxs[i])-1, -1
-
-			if len(logs) > 0 && prevLogIdx >= 0 {
-				prevLogTerm = logs[prevLogIdx].Term
-			}
-
-			args := &AppendEntriesArgs{
-				LeaderIdx:       rf.me,
-				Term:            term,
-				PrevLogIdx:      int(prevLogIdx),
-				PrevLogTerm:     prevLogTerm,
-				LeaderCommitIdx: committedIdx,
-			}
-			if prevLogIdx > -1 {
-				args.Logs = logs[prevLogIdx+1:]
-			}
-
-			Logger.Printf("[HeartBeat] [S%v]->[S%v] debugIDx=%v args=%v", rf.me, i, debugIdx, util.JSONMarshal(args))
-			reply := &AppendEntriesReply{}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				ok := peer.Call("Raft.AppendEntries", args, reply)
-				if !ok {
-					return
+				for !rf.killed() {
+					time.Sleep(time.Millisecond * 10)
+					select {
+					case <-closeCh:
+						Logger.Printf("[HeartBeat] close [S%v] goroutine", i)
+						return
+					default:
+						rf.mu.Lock()
+						prevLogIdx, prevLogTerm := atomic.LoadInt32(&rf.NextIdxs[i])-1, -1
+						if len(rf.Logs) > 0 && prevLogIdx >= 0 {
+							prevLogTerm = rf.Logs[prevLogIdx].Term
+						}
+						args := &AppendEntriesArgs{
+							LeaderIdx:       rf.me,
+							Term:            term,
+							PrevLogIdx:      int(prevLogIdx),
+							PrevLogTerm:     prevLogTerm,
+							LeaderCommitIdx: committedIdx,
+						}
+						if prevLogIdx > -1 {
+							args.Logs = rf.Logs[prevLogIdx+1:]
+						}
+						rf.mu.Unlock()
+
+						Logger.Printf("[HeartBeat] [S%v]->[S%v] args=%v", rf.me, i, util.JSONMarshal(args))
+
+						reply := &AppendEntriesReply{}
+						ok := peer.Call("Raft.AppendEntries", args, reply)
+						// term已经发生改变，应忽略此次心跳结果
+						rf.mu.Lock()
+						if term != rf.Term {
+							rf.mu.Unlock()
+							return
+						}
+						rf.mu.Unlock()
+
+						replyMutx.Lock()
+						replys[i] = reply
+						replyMutx.Unlock()
+						if !ok {
+							Logger.Printf("[HeartBeat] [S%v]->[S%v] fail, res=false", rf.me, i)
+							continue
+						}
+						if reply == nil {
+							Logger.Printf("[HeartBeat] [S%v]->[S%v] fail, reply is nil", rf.me, i)
+							return
+						}
+						if !reply.Success && prevLogIdx >= 0 {
+							atomic.StoreInt32(&rf.NextIdxs[i], prevLogIdx)
+							Logger.Printf("[HeartBeat] [S%v]->[S%v] fail, reduce prevLogIdx->%v", rf.me, i, prevLogIdx-1)
+							continue
+						}
+						if !reply.Success && prevLogIdx < 0 {
+							Logger.Printf("[HeartBeat] [S%v]->[S%v] fail, can't reduce prevLogIdx", rf.me, i)
+							return
+						}
+						// success
+						// 更新NextIdx以及MatchIdxs
+						rf.mu.Lock()
+						atomic.StoreInt32(&rf.NextIdxs[i], int32(len(logs)))
+						rf.MatchIdxs[i] = int32(len(logs) - 1)
+						Logger.Printf("[HeartBeat] success, update NextIdxs[%v]->%v, MatchIdxs[%v]->%v", i, len(logs), i, len(logs)-1)
+						rf.mu.Unlock()
+						return
+					}
 				}
-				replyMutx.Lock()
-				replys[i] = reply
-				replyMutx.Unlock()
 			}()
 		}
 		// TODO 这里收到大多数的回应就可以继续保持leader了，不需要等待超时
 		util.WaitWithTimeout(&wg, time.Duration(int(rf.ElectionTimeout)*int(time.Millisecond))*4/5)
+		close(closeCh)
 		// term已经发生改变，应忽略此次心跳结果
 		rf.mu.Lock()
 		if term != rf.Term {
@@ -923,21 +971,12 @@ func (rf *Raft) SendHeartBeat() {
 		count := 0
 		maxTerm := term
 		replyMutx.Lock()
-		for i, reply := range replys {
+		for _, reply := range replys {
 			if reply == nil {
 				continue
 			}
 			if reply.Success {
 				count++
-				// 更新NextIdx以及MatchIdxs
-				atomic.StoreInt32(&rf.NextIdxs[i], int32(len(logs)))
-				rf.MatchIdxs[i] = int32(len(logs) - 1)
-				Logger.Printf("[HeartBeat] update NextIdxs[%v]->%v, MatchIdxs[%v]->%v", i, len(logs), i, len(logs)-1)
-			} else {
-				// 失败之后尝试将NextIdx-1 等待下次心跳重试 这里如果大多数都失败了，就没有机会进行下次了
-				if rf.NextIdxs[i] >= 0 {
-					rf.NextIdxs[i] = rf.NextIdxs[i] - 1
-				}
 			}
 			maxTerm = util.Max(maxTerm, reply.Term)
 		}
@@ -953,12 +992,12 @@ func (rf *Raft) SendHeartBeat() {
 			continue
 		}
 		if count >= len(rf.peers)/2 {
-			Logger.Printf("[HeartBeat] [S%v] debugIdx=%v receive major heartbeat", rf.me, debugIdx)
+			Logger.Printf("[HeartBeat] [S%v] receive major heartbeat", rf.me)
 			rf.mu.Lock()
 			rf.changeStatus(ServerStatusLeader, rf.me)
 			rf.mu.Unlock()
 		} else {
-			Logger.Printf("[HeartBeat] [S%v] debugIdx=%v not receive major heartbeat", rf.me, debugIdx)
+			Logger.Printf("[HeartBeat] [S%v] not receive major heartbeat", rf.me)
 			rf.mu.Lock()
 			rf.changeStatus(ServerStatusCandidate, rf.me)
 			rf.mu.Unlock()
