@@ -25,11 +25,9 @@ while [ $j -lt $total ]; do
 		
 		i=$((i+1))
 	done
-	j=$((j+1))
-
 	if (( $flag ==  1 )); then
 		break
 	fi
 	curl -X POST "https://api.telegram.org/bot5403804301:AAH285DUy_5VHy2YpC846xmIODdWN5fQPB8/sendMessage" -d "chat_id=1003929699&text=${test_names[$j]} success"
-
+	j=$((j+1))
 done

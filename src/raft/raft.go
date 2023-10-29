@@ -900,8 +900,9 @@ func (rf *Raft) SendHeartBeat() {
 							PrevLogTerm:     prevLogTerm,
 							LeaderCommitIdx: committedIdx,
 						}
+						// 传递数组须谨慎，这里如果直接使用rf.Logs[prevLogIdx+1:]，会有数据竞争
 						if prevLogIdx > -1 {
-							args.Logs = rf.Logs[prevLogIdx+1:]
+							args.Logs = append(args.Logs, rf.Logs[prevLogIdx+1:]...)
 						}
 						rf.mu.Unlock()
 
