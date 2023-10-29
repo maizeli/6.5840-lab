@@ -60,9 +60,6 @@ type ApplyMsg struct {
 	Snapshot      []byte
 	SnapshotTerm  int
 	SnapshotIndex int
-
-	// For Debug
-	Pos string
 }
 
 // A Go object implementing a single Raft peer.
@@ -197,7 +194,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	CurrentTerm int // 选举人参加选举的任期
+	Term        int // 选举人参加选举的任期
 	ServerIdx   int // 选举人的下标
 	LastLogIdx  int // 最后一条log的下标
 	LastLogTerm int // 最后一条log的term
@@ -237,7 +234,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	Logger.Printf("[RequestVote] [S%v] [T%v] recv [S%v] [T%v] RequestVote", rf.me, rf.Term, args.ServerIdx, args.CurrentTerm)
+	Logger.Printf("[RequestVote] [S%v] [T%v] recv [S%v] [T%v] RequestVote", rf.me, rf.Term, args.ServerIdx, args.Term)
 	defer func() {
 		if reply.IsVote {
 			Logger.Printf("[RequestVote] [S%v] [T%v] vote for [S%v] [T%v] RequestVote", rf.me, rf.Term, args.ServerIdx, rf.Term)
@@ -248,14 +245,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.Term
 	reply.ServerIdx = rf.me
 	// 1. 过期Term
-	if args.CurrentTerm < rf.Term {
+	if args.Term < rf.Term {
 		reply.DenyReason = fmt.Sprintf("term less")
 		return
 	}
 
-	if args.CurrentTerm > rf.Term {
-		rf.Term = args.CurrentTerm
-		rf.changeStatus(ServerStatusFollower, -1, false) // 这里先变为Follower，但是不更新上次心跳时间，只有为此Server投票时才能更新心跳时间。 防止当前server是唯一一个能当选的的server，由于被其他server频繁的"打扰",无法发起选举
+	/*
+		Term大于当前Server Term时,无论其Log是否满足选择Leader的条件,当前Server都应该先转换状态为Follower
+		此时不需要更新上次心跳时间,以便当前server也可以发起选举:防止当前Server是唯一一个能当选的的Server,由于被其他Server频繁的"打扰",无法发起选举
+	*/
+	if args.Term > rf.Term {
+		rf.Term = args.Term
+		rf.changeStatus(ServerStatusFollower, -1, false)
 		// Last Log比较
 		lastLogTerm, lastLogIdx := 0, 0
 		if len(rf.Logs) > 0 {
@@ -276,7 +277,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	if args.CurrentTerm == rf.Term {
+	if args.Term == rf.Term {
 		if rf.VoteIdx == -1 || rf.VoteIdx == args.ServerIdx {
 			reply.IsVote = true
 			rf.changeStatus(ServerStatusFollower, args.ServerIdx)
@@ -333,7 +334,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // Start只能是串行的,并发提交两个命令可能会使用一个Index
 // 如果大多数server都复制了此消息，但是此时Server已经不再是leader怎么办？
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	now := time.Now().UnixMicro()
 	// 加锁保证只有一个Start在运行
 	rf.StartMu.Lock()
 	defer rf.StartMu.Unlock()
@@ -344,11 +344,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 	rf.mu.Lock()
-	Logger.Printf("[Start] [S%v] [T%v] command = %v, debugTime=%v", rf.me, rf.Term, util.JSONMarshal(command), now)
+	Logger.Printf("[Start] [S%v] [T%v] command = %v", rf.me, rf.Term, util.JSONMarshal(command))
 	isLeader = rf.ServerStatus == ServerStatusLeader
 	// 非Leader直接返回
 	if !isLeader {
-		Logger.Printf("[Start] [S%v] [T%v] is not leader, debugTime=%v", rf.me, rf.Term, now)
+		Logger.Printf("[Start] [S%v] [T%v] is not leader", rf.me, rf.Term)
 		rf.mu.Unlock()
 		return idx, term, isLeader
 	}
@@ -361,7 +361,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// 记录当前Term
 	term = rf.Term
 	// 将command添加到leader本地状态机
-	log := &Log {
+	log := &Log{
 		Term:    term,
 		Idx:     idx,
 		Command: command,
@@ -376,22 +376,20 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Leader开始复制新Log
 	cnt := int32(0)
 	for i, peer := range rf.peers {
-		i, peer := i, peer
 		if i == rf.me {
 			continue
 		}
-		wg.Add(1)
+		i, peer := i, peer
 
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			// 死循环复制
-			for {
-				if rf.killed() {
-					return
-				}
+			for !rf.killed() {
 				rf.mu.Lock()
-				// 获取对应Follower该从哪一条Log开始复制
+				// 获取对应Follower从哪一条Log开始复制
 				prevLogIdx, prevLogTerm := atomic.LoadInt32(&rf.NextIdxs[i])-1, -1
+				// 用于后面更新NextIdxs/MatchIdxs
 				logLen := len(rf.Logs)
 				if len(rf.Logs) > 0 && prevLogIdx >= 0 {
 					prevLogTerm = rf.Logs[prevLogIdx].Term
@@ -408,40 +406,41 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				}
 				rf.mu.Unlock()
 
-				Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v] args=%v, debugTime=%v", rf.me, term, i, util.JSONMarshal(args), now)
+				Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v] args=%v", rf.me, term, i, util.JSONMarshal(args))
 
 				reply := &AppendEntriesReply{}
 				res := peer.Call("Raft.AppendEntries", args, reply)
 				if !res {
-					Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v], res=false, debugTime=%v", rf.me, term, i, now)
+					Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v], res=false", rf.me, term, i)
 					return
 				}
 				replys[i] = reply
 				rf.mu.Lock()
+				// 发起Start时的任期已过期,跳出循环
 				if term != rf.Term {
 					Logger.Printf("[Start] [S%v] [T%v] send Command[%v], recv [S%v]'s response on [T%v]", rf.me, term, command, i, rf.Term)
 					rf.mu.Unlock()
 					return
 				}
 				rf.mu.Unlock()
-				// 如果出现并发更新可能会导致leader丢失一部分数据，但是问题不大只是增加同步的时间
+				// 如果出现并发更新可能会导致NextIdxs/MatchIdxs回拨?影响可控
 				if reply.Success {
 					rf.mu.Lock()
 					atomic.AddInt32(&cnt, 1)
 					atomic.StoreInt32(&rf.NextIdxs[i], int32(logLen))
 					atomic.StoreInt32(&rf.MatchIdxs[i], int32(logLen))
-					Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v] success, debugTime=%v", rf.me, term, i, now)
+					Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v] success", rf.me, term, i)
 					rf.mu.Unlock()
 					break
 				} else {
-					// 这里失败了可能是term不合法
+					// Term小于,直接返回
 					if reply.Term > term {
 						return
 					}
 					// 因为前一条Log不匹配，NextLogIdx-1，再试下
-					Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v] fail, log idx -1 and retry, debugTime=%v", rf.me, term, i, now)
+					Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v] fail, log idx -1 and retry", rf.me, term, i)
 					if prevLogIdx <= -1 {
-						Logger.Printf("[Start] [S%v] [T%v] prev log idx is -1, break, debugTime=%v", rf.me, term, now)
+						Logger.Printf("[Start] [S%v] [T%v] prev log idx less than -1, break", rf.me, term)
 						break
 					}
 					atomic.StoreInt32(&rf.NextIdxs[i], prevLogIdx)
@@ -449,13 +448,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			}
 		}()
 	}
-	// TODO 超时时长待确定
+
 	timeOut := util.WaitWithTimeout(wg, time.Duration(rf.ElectionTimeout)*time.Millisecond)
 	if timeOut {
-		Logger.Printf("[Start] [S%v] [T%v] time out, debugTime=%v", rf.me, term, now)
+		Logger.Printf("[Start] [S%v] [T%v] time out", rf.me, term)
 	} else {
-		Logger.Printf("[Start] [S%v] start successful, debugTime=%v", rf.me, now)
+		Logger.Printf("[Start] [S%v] [T%v] start successful", rf.me, term)
 	}
+	// 如果返回的Term存在大于当前Term的要及时更新当前Term
 	maxTerm := term
 	for _, reply := range replys {
 		if reply == nil {
@@ -469,14 +469,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			rf.changeStatus(ServerStatusFollower, -1)
 			rf.Term = maxTerm
 		}
-		Logger.Printf("[Start] [S%v] term is timeout [T%v] < [T%v], debugTime=%v", rf.me, term, rf.Term, now)
+		Logger.Printf("[Start] [S%v] term is timeout [T%v] < [T%v]", rf.me, term, rf.Term)
 		rf.mu.Unlock()
 		return idx, maxTerm, false // 这里+1是因为测试认为idx从1开始
 	}
 	if int(cnt) < len(rf.peers)/2 {
-		Logger.Printf("[Start] [S%v] [T%v] less than half server aggree command, cnt(%v) %v, debugTime=%v", rf.me, term, cnt, command, now)
+		Logger.Printf("[Start] [S%v] [T%v] less than half server aggree command, cnt(%v) %v", rf.me, term, cnt, command)
 	} else {
-		Logger.Printf("[Start] [S%v] [T%v] more than half server aggree command cnt(%v) %v, debugTime=%v", rf.me, term, cnt, command, now)
+		Logger.Printf("[Start] [S%v] [T%v] more than half server aggree command cnt(%v) %v", rf.me, term, cnt, command)
 		rf.mu.Lock()
 		rf.CommitIdx(idx)
 		rf.mu.Unlock()
@@ -487,7 +487,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 // CommitIdx 执行CommitIdx需在外层获取rf.mu
 func (rf *Raft) CommitIdx(idx int) {
-	// Logger.Printf("[CommitIdx] [S%v] [T%v] CommitIdx(%v), len(Logs)=%v, commitedIdx=%v", rf.me, rf.Term, idx, len(rf.Logs), rf.CommittedIdx)
 	if idx <= rf.CommittedIdx {
 		Logger.Printf("[CommitIdx] [S%v] [T%v] commit idx %v <= rf.CommitedIdx %v, not need commit", rf.me, rf.Term, idx, rf.CommittedIdx)
 		return
@@ -496,15 +495,11 @@ func (rf *Raft) CommitIdx(idx int) {
 		Logger.Printf("[CommitIdx] [S%v] [T%v] commit idx %v > len(rf.Logs) %v, not need commit", rf.me, rf.Term, idx, len(rf.Logs))
 		return
 	}
-	// 这里Logs[i]有可能是nil
-	// Logger.Printf("[CommitIdx] [S%v] [T%v] begin commit idx %v", rf.me, rf.Term, idx)
 	for i := rf.CommittedIdx + 1; i <= idx; i++ {
-		// Logger.Printf("[CommitIdx] [S%v] [T%v] send apply msg:%v", rf.me, rf.Term, i+1)
 		rf.ApplyMsgCh <- ApplyMsg{
 			CommandValid: true,
 			Command:      rf.Logs[i].Command,
 			CommandIndex: i + 1,
-			Pos:          util.TernaryOperate(len(rf.Logs) == 0, "HeartBeat", "Start"),
 		}
 	}
 	rf.CommittedIdx = idx
@@ -577,9 +572,9 @@ func (rf *Raft) StartElection() {
 	}
 	rf.Term += 1
 	localTerm := rf.Term
-	var lastCommand *Log
+	var lastLog *Log
 	if len(rf.Logs) > 0 {
-		lastCommand = rf.Logs[len(rf.Logs)-1]
+		lastLog = rf.Logs[len(rf.Logs)-1]
 	}
 	rf.mu.Unlock()
 
@@ -596,12 +591,12 @@ func (rf *Raft) StartElection() {
 		go func() {
 			defer wg.Done()
 			args := &RequestVoteArgs{
-				CurrentTerm: localTerm,
-				ServerIdx:   rf.me,
+				Term:      localTerm,
+				ServerIdx: rf.me,
 			}
-			if lastCommand != nil {
-				args.LastLogIdx = lastCommand.Idx
-				args.LastLogTerm = lastCommand.Term
+			if lastLog != nil {
+				args.LastLogIdx = lastLog.Idx
+				args.LastLogTerm = lastLog.Term
 			}
 			reply := &RequestVoteReply{}
 			Logger.Printf("[Election] [S%v] [T%v] -> [S%v] send RequestVote...", rf.me, localTerm, i)
@@ -613,16 +608,15 @@ func (rf *Raft) StartElection() {
 			replyChan <- reply
 		}()
 	}
-	Logger.Printf("[Election] [S%v] [T%v] send all RequestVote success, begin waiting....", rf.me, localTerm)
 	// 这里不能傻傻等待所有服务器响应，只要超过一半的server投票，就应该停止
 	voteCount, flag, tCh := 0, false, time.After(time.Millisecond*time.Duration(rf.ElectionTimeout)*1/2)
 	for {
+		// 超时或者投票数量超过一般立即退出
 		if flag {
 			break
 		}
 		select {
 		case reply := <-replyChan:
-			// Logger.Printf("[Election] [S%v] recv [s%v] RequestVoteReply", rf.me, reply.ServerIdx)
 			if reply != nil && reply.IsVote {
 				voteCount += 1
 			}
@@ -636,6 +630,7 @@ func (rf *Raft) StartElection() {
 		default:
 		}
 	}
+	// 判断是否存在ServerTerm大于当前
 	var maxTerm int
 	for _, reply := range replys {
 		if reply == nil {
@@ -651,11 +646,7 @@ func (rf *Raft) StartElection() {
 			Logger.Printf("[Election] [S%v] NOT receive vote from [S%v]", rf.me, reply.ServerIdx)
 		}
 	}
-	// 4. 统计结果
-	/*
-		中间可能有意外发生:
-		1. 选举过程中收到其他 leader 的心跳，此时变为Follower
-	*/
+	// 统计结果
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	// 此时term已经过期 已经变成其他人的小弟or已经开始下一轮选举
@@ -817,7 +808,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// Prev Log Term 不合法 当前server不存在PrevLogIdx的Log或者该log term不一致 这里要让leader主动重试
-	// 存在一个问题，使用下面的判断时，如果当前server刚恢复, 可能无法产生新的leader todo 这里需要在心跳的时候也发送entries解决
 	if args.PrevLogIdx >= 0 && (args.PrevLogIdx > len(rf.Logs)-1 || rf.Logs[args.PrevLogIdx].Term != args.PrevLogTerm) {
 		result = util.IntPtr(AppendEntriesResultDenyInvalidPrevLog)
 		return
@@ -825,7 +815,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// Term相等
 	if args.Term == rf.Term {
-		// 当前Follower与此次不同，同步失败
+		// 当前Server的Leader非请求中的Server,拒绝
 		if serverStatus == ServerStatusFollower && rf.LeaderIdx != -1 && rf.LeaderIdx != args.LeaderIdx {
 			result = util.IntPtr(AppendEntriesResultDenyTermEqualDiffLeader)
 			return
@@ -874,6 +864,7 @@ func (rf *Raft) SendHeartBeat() {
 		// 更新CommitedIdx
 		rf.UpdateCommitedIdx()
 		rf.mu.Unlock()
+
 		if status != ServerStatusLeader {
 			continue
 		}
@@ -1001,7 +992,6 @@ func (rf *Raft) SendHeartBeat() {
 			rf.mu.Lock()
 			rf.changeStatus(ServerStatusCandidate, rf.me)
 			rf.mu.Unlock()
-			// 这里是否立刻发起选举
 		}
 	}
 	Logger.Printf("[SendHeartBeat] [S%v] stop send heart beat", rf.me)

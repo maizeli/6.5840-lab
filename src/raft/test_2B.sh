@@ -1,8 +1,6 @@
 #!/bin/bash
 
-# test_names=("TestBasicAgree2B" "TestRPCBytes2B" "TestFollowerFailure2B" "TestLeaderFailure2B" "TestFailAgree2B" "TestFailNoAgree2B" "TestConcurrentStarts2B" "TestRejoin2B" "TestBackup2B" "TestCount2B")
-# test_names=("TestFollowerFailure2B" "TestLeaderFailure2B" "TestFailAgree2B" "TestFailNoAgree2B" "TestConcurrentStarts2B" "TestRejoin2B" "TestBackup2B" "TestCount2B")
-test_names=("TestFailNoAgree2B" "TestConcurrentStarts2B" "TestRejoin2B" "TestBackup2B" "TestCount2B")
+test_names=("TestBasicAgree2B" "TestRPCBytes2B" "TestFollowerFailure2B" "TestLeaderFailure2B" "TestFailAgree2B" "TestFailNoAgree2B" "TestConcurrentStarts2B" "TestRejoin2B" "TestBackup2B" "TestCount2B")
 
 j=0
 total=${#test_names[*]}
@@ -11,6 +9,7 @@ while [ $j -lt $total ]; do
 	i=1
 	flag=0
 	while [ $i -le 50 ]; do
+		date
 		echo -e "\tRunning ${test_names[$j]} iteration $i..."
 		rm -rf log*.txt
 		echo ${test_names[$j]}
@@ -20,6 +19,7 @@ while [ $j -lt $total ]; do
 		if echo "$output" | grep -q "FAIL"; then
 			echo "Test failed. Stopping the loop."
 			flag=1
+			curl -X POST "https://api.telegram.org/bot5403804301:AAH285DUy_5VHy2YpC846xmIODdWN5fQPB8/sendMessage" -d "chat_id=1003929699&text=${test_names[$j]} fail:iteration$i,$output"
 			break
 		fi
 		
@@ -30,4 +30,6 @@ while [ $j -lt $total ]; do
 	if (( $flag ==  1 )); then
 		break
 	fi
+	curl -X POST "https://api.telegram.org/bot5403804301:AAH285DUy_5VHy2YpC846xmIODdWN5fQPB8/sendMessage" -d "chat_id=1003929699&text=${test_names[$j]} success"
+
 done
