@@ -60,6 +60,7 @@ import (
 	"time"
 
 	"6.5840/labgob"
+	"6.5840/util"
 )
 
 type reqMsg struct {
@@ -277,6 +278,7 @@ func (rn *Network) processReq(req reqMsg) {
 			req.replyCh <- replyMsg{false, nil}
 		} else if reliable == false && (rand.Int()%1000) < 100 {
 			// drop the reply, return as if timeout
+			util.Logger.Printf("req return false, req=%v", req)
 			req.replyCh <- replyMsg{false, nil}
 		} else if longreordering == true && rand.Intn(900) < 600 {
 			// delay the response for a while
@@ -284,6 +286,7 @@ func (rn *Network) processReq(req reqMsg) {
 			// Russ points out that this timer arrangement will decrease
 			// the number of goroutines, so that the race
 			// detector is less likely to get upset.
+			util.Logger.Printf("req delay %v, req=%v", ms, req)
 			time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
 				atomic.AddInt64(&rn.bytes, int64(len(reply.reply)))
 				req.replyCh <- reply
