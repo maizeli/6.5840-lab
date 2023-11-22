@@ -433,7 +433,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.Logs = append(rf.Logs, log)
 	rf.mu.Unlock()
 
-	wg := &sync.WaitGroup{}
+	wg, replyMu := &sync.WaitGroup{}, sync.Mutex{}
 	replys := make([]*AppendEntriesReply, len(rf.peers))
 	// Leader开始复制新Log
 	cnt := int32(0)
@@ -476,7 +476,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					util.Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v], res=false", rf.me, term, i)
 					return
 				}
+				replyMu.Lock()
 				replys[i] = reply
+				replyMu.Unlock()
 				rf.mu.Lock()
 				// 发起Start时的任期已过期,跳出循环
 				if term != rf.Term {
@@ -519,12 +521,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	// 如果返回的Term存在大于当前Term的要及时更新当前Term
 	maxTerm := term
+	replyMu.Lock()
 	for _, reply := range replys {
 		if reply == nil {
 			continue
 		}
 		maxTerm = util.Max(maxTerm, reply.Term)
 	}
+	replyMu.Unlock()
 	if maxTerm > term {
 		rf.mu.Lock()
 		if maxTerm > rf.Term {
@@ -535,7 +539,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.mu.Unlock()
 		return idx, maxTerm, false // 这里+1是因为测试认为idx从1开始
 	}
-	if int(cnt) < len(rf.peers)/2 {
+	if int(atomic.LoadInt32(&cnt)) < len(rf.peers)/2 {
 		util.Logger.Printf("[Start] [S%v] [T%v] less than half server aggree command, cnt(%v) %v", rf.me, term, cnt, command)
 	} else {
 		util.Logger.Printf("[Start] [S%v] [T%v] more than half server aggree command cnt(%v) %v", rf.me, term, cnt, command)
