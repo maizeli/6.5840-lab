@@ -1129,9 +1129,11 @@ func (rf *Raft) SendHeartBeat() {
 			rf.mu.Unlock()
 		} else {
 			util.Logger.Printf("[HeartBeat] [S%v] not receive major heartbeat", rf.me)
-			rf.mu.Lock()
-			rf.changeStatus(ServerStatusCandidate, rf.me)
-			rf.mu.Unlock()
+			// 这里Leader不需要主动变为其他状态
+			/*			rf.mu.Lock()
+						rf.changeStatus(ServerStatusCandidate, rf.me)
+						rf.mu.Unlock()
+			*/
 		}
 	}
 	util.Logger.Printf("[SendHeartBeat] [S%v] stop send heart beat", rf.me)
@@ -1219,7 +1221,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Lab强制每秒限制10次心跳，心跳频率跟选举超时时间无关。
 	// 需要保证在一次选举超时时间内可以完整的进行多次心跳即可。
 	// 选举超时时间为 400~600ms
-	rf.ElectionTimeout = int32(rand.Intn(200) + 600)
+	rf.ElectionTimeout = int32(rand.Intn(200) + 400)
 	// 初始化心跳时间
 	rf.LastHeartbeatTime = time.Now().UnixMilli()
 	// 初始状态为 follower

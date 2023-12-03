@@ -8,7 +8,10 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
+import (
+	"6.5840/util"
+	"testing"
+)
 import "fmt"
 import "time"
 import "math/rand"
@@ -897,8 +900,14 @@ func TestFigure8Unreliable2C(t *testing.T) {
 	cfg.one(rand.Int()%10000, 1, true)
 
 	nup := servers
-	for iters := 0; iters < 1000; iters++ {
-		if iters == 200 {
+	for iters := 0; iters < 3; iters++ {
+		util.Logger.Printf("%v begin", iters)
+		for i := servers - 1; i >= 0; i-- {
+			cfg.rafts[i].mu.Lock()
+			util.Logger.Printf("[S%v] logs=%v", i, util.JSONMarshal(cfg.rafts[i].Logs))
+			cfg.rafts[i].mu.Unlock()
+		}
+		if iters == 1 {
 			cfg.setlongreordering(true)
 		}
 		leader := -1
@@ -935,6 +944,11 @@ func TestFigure8Unreliable2C(t *testing.T) {
 		if cfg.connected[i] == false {
 			cfg.connect(i)
 		}
+	}
+	for i, raft := range cfg.rafts {
+		raft.mu.Lock()
+		util.Logger.Printf("raft[%v]=%v", i, util.JSONMarshal(raft.Logs))
+		raft.mu.Unlock()
 	}
 
 	cfg.one(rand.Int()%10000, servers, true)

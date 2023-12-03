@@ -578,9 +578,20 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			}
 			cfg.mu.Unlock()
 			if rf != nil {
+				//logsCpy := [][]*Log{}
+				//for _, raft := range cfg.rafts {
+				//	raft.mu.Lock()
+				//	logsCpy = append(logsCpy, raft.Logs)
+				//	raft.mu.Unlock()
+				//}
 				index1, _, ok := rf.Start(cmd)
 				util.Logger.Printf("[Test] one(%v) starts %v, res:%v\n", cmd, time.Since(t0).Milliseconds(), ok)
 				if ok {
+					//for i, logs := range logsCpy {
+					//	cfg.rafts[i].mu.Lock()
+					//	util.Logger.Printf("raft[%v]=%v", i, util.JSONMarshal(logs))
+					//	cfg.rafts[i].mu.Unlock()
+					//}
 					util.Logger.Printf("[Test] one(%v) ends %v, get index:%v\n", cmd, time.Since(t0).Milliseconds(), index1)
 					index = index1
 					break

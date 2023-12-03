@@ -10,7 +10,7 @@ while [ $j -lt $total ]; do
 	echo "Running ${test_names[$j]}..."
 	i=1
 	flag=0
-	while [ $i -le 50 ]; do
+	while [ $i -le 1000 ]; do
 		date
 		echo -e "\tRunning ${test_names[$j]} iteration $i..."
 		rm -rf log*.txt
