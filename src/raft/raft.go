@@ -1129,11 +1129,9 @@ func (rf *Raft) SendHeartBeat() {
 			rf.mu.Unlock()
 		} else {
 			util.Logger.Printf("[HeartBeat] [S%v] not receive major heartbeat", rf.me)
-			// 这里Leader不需要主动变为其他状态
-			/*			rf.mu.Lock()
-						rf.changeStatus(ServerStatusCandidate, rf.me)
-						rf.mu.Unlock()
-			*/
+			rf.mu.Lock()
+			rf.changeStatus(ServerStatusCandidate, rf.me)
+			rf.mu.Unlock()
 		}
 	}
 	util.Logger.Printf("[SendHeartBeat] [S%v] stop send heart beat", rf.me)
