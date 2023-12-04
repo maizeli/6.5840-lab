@@ -662,9 +662,8 @@ func (rf *Raft) StartElection() {
 	rf.mu.Unlock()
 
 	// 2. 向其他服务器发起投票
-	wg := sync.WaitGroup{}
-	replyChan := make(chan *RequestVoteReply, len(rf.peers))
-	replys := []*RequestVoteReply{}
+	wg, replys, needVoteCnt := sync.WaitGroup{}, make([]*RequestVoteReply, len(rf.peers)), int32(len(rf.peers)/2)
+	replyMu := sync.Mutex{}
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
@@ -691,33 +690,19 @@ func (rf *Raft) StartElection() {
 				util.Logger.Printf("[Election] [S%v] [T%v] -> [S%v] send RequestVote fail", rf.me, localTerm, i)
 				return
 			}
-			replyChan <- reply
+			replyMu.Lock()
+			replys[i] = reply
+			if reply != nil && reply.IsVote {
+				atomic.AddInt32(&needVoteCnt, -1)
+			}
+			replyMu.Unlock()
 		}()
 	}
 	// 这里不能傻傻等待所有服务器响应，只要超过一半的server投票，就应该停止
-	voteCount, flag, tCh := 0, false, time.After(time.Millisecond*time.Duration(rf.ElectionTimeout)*1/2)
-	for {
-		// 超时或者投票数量超过一般立即退出
-		if flag {
-			break
-		}
-		select {
-		case reply := <-replyChan:
-			if reply != nil && reply.IsVote {
-				voteCount += 1
-			}
-			if voteCount >= len(rf.peers)/2 {
-				flag = true
-			}
-			replys = append(replys, reply)
-		case <-tCh:
-			flag = true
-			// 这里要添加default语句是的flag可以快速被执行到 这里添加了default反而收到投票之后没有跳出
-		default:
-		}
-	}
+	util.WaitWithTimeout(&wg, time.Millisecond*time.Duration(rf.ElectionTimeout)*3/5, &needVoteCnt)
 	// 判断是否存在ServerTerm大于当前
 	var maxTerm int
+	replyMu.Lock()
 	for _, reply := range replys {
 		if reply == nil {
 			util.Logger.Printf("[Election] [S%v] invalid reply", rf.me)
@@ -732,6 +717,7 @@ func (rf *Raft) StartElection() {
 			util.Logger.Printf("[Election] [S%v] NOT receive vote from [S%v]", rf.me, reply.ServerIdx)
 		}
 	}
+	replyMu.Unlock()
 	// 统计结果
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -751,9 +737,9 @@ func (rf *Raft) StartElection() {
 		util.Logger.Printf("[Election] [S%v] [T%v] already become a follower", rf.me, rf.Term)
 		return
 	}
-	// 包含等于:因为自己会给自己投一票
-	if voteCount >= len(rf.peers)/2 {
-		util.Logger.Printf("[Election] [S%v] [T%v] receive major vote[%v]", rf.me, rf.Term, voteCount)
+
+	if atomic.LoadInt32(&needVoteCnt) <= 0 {
+		util.Logger.Printf("[Election] [S%v] [T%v] receive major vote[%v]", rf.me, rf.Term, int32(len(rf.peers)/2)-atomic.LoadInt32(&needVoteCnt))
 		_ = rf.changeStatus(ServerStatusLeader, rf.me)
 	} else {
 		util.Logger.Printf("[Election] [S%v] [T%v] not receive enough vote", rf.me, rf.Term)
