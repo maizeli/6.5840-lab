@@ -78,17 +78,17 @@ type Raft struct {
 	StartMu      sync.Mutex // 用于保证Start的串行性
 }
 
-func (rf *Raft) findTermFirstCommand(term int) *Log {
+func (rf *Raft) findTermLastCommand(term int) *Log {
 	var res *Log
-	for i := len(rf.Logs) - 1; i >= 0; i-- {
+	for i := 0; i < len(rf.Logs); i++ {
 		if rf.Logs[i] == nil {
-			util.Logger.Printf("findTermFirstCommand [S%v] rf.Logs[%v]=nil", rf.me, i)
+			util.Logger.Printf("findTermLastCommand [S%v] rf.Logs[%v]=nil", rf.me, i)
 			continue
 		}
 		if rf.Logs[i].Term == term {
 			res = rf.Logs[i]
 		}
-		if rf.Logs[i].Term < term {
+		if rf.Logs[i].Term > term {
 			break
 		}
 	}
@@ -419,7 +419,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// 非Leader直接返回
 	if !isLeader {
 		rf.mu.Unlock()
-		return idx, term, isLeader
+		return idx, term, false
 	}
 	util.Logger.Printf("[Start] [S%v] [T%v] command = %v", rf.me, rf.Term, util.JSONMarshal(command))
 	// 当前命令Idx=CommittedIdx+1
@@ -473,7 +473,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					//FromServer: rf.me,
 					//ToServer:   i,
 				}
-				if prevLogIdx+1 >= 0 {
+				if prevLogIdx >= -1 {
 					args.Logs = rf.Logs[prevLogIdx+1:]
 				}
 				rf.mu.Unlock()
@@ -486,9 +486,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					util.Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v], res=false", rf.me, term, i)
 					return
 				}
-				replyMu.Lock()
-				replys[i] = reply
-				replyMu.Unlock()
 				rf.mu.Lock()
 				// 发起Start时的任期已过期,跳出循环
 				if term != rf.Term {
@@ -497,28 +494,54 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					return
 				}
 				rf.mu.Unlock()
+
+				// 超时？再给机会
+				if reply == nil {
+					break
+				}
+
+				replyMu.Lock()
+				replys[i] = reply
+				replyMu.Unlock()
 				// 如果出现并发更新可能会导致NextIdxs/MatchIdxs回拨?影响可控
 				if reply.Success {
 					rf.mu.Lock()
-					atomic.AddInt32(&cnt, 1)
 					atomic.StoreInt32(&rf.NextIdxs[i], int32(logLen))
 					atomic.StoreInt32(&rf.MatchIdxs[i], int32(logLen)-1)
-					atomic.AddInt32(&successCnt, -1)
 					util.Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v] success, NextIdx[%v]->%v, MatchIdx[%v]->%v", rf.me, term, i, i, logLen, i, logLen-1)
 					rf.mu.Unlock()
+					// TODO 这里优化掉一个
+					atomic.AddInt32(&successCnt, -1)
+					atomic.AddInt32(&cnt, 1)
 					break
 				} else {
+					if prevLogIdx < 0 {
+						util.Logger.Printf("[Start] [S%v] [T%v] prev log idx less than -1, break", rf.me, term)
+						break
+					}
 					// Term小于,直接返回
 					if reply.Term > term {
 						return
 					}
-					// 因为前一条Log不匹配，NextLogIdx-1，再试下
-					util.Logger.Printf("[Start] [S%v] [T%v] send AppendEntries to [S%v] fail, log idx -1 and retry", rf.me, term, i)
-					if prevLogIdx <= -1 {
-						util.Logger.Printf("[Start] [S%v] [T%v] prev log idx less than -1, break", rf.me, term)
-						break
+					util.Logger.Printf("[Start] [S%v] [T%v] reply=%v", rf.me, term, util.JSONMarshal(reply))
+					if reply.XTerm != -1 {
+						rf.mu.Lock()
+						lastCommand := rf.findTermLastCommand(reply.XTerm)
+						rf.mu.Unlock()
+						if lastCommand != nil {
+							atomic.StoreInt32(&rf.NextIdxs[i], int32(lastCommand.Idx))
+							util.Logger.Printf("[HeartBeat] [S%v]->[S%v] fail, reduce prevLogIdx->%v", rf.me, i, lastCommand.Idx)
+						} else {
+							atomic.StoreInt32(&rf.NextIdxs[i], int32(reply.XIdx))
+							util.Logger.Printf("[HeartBeat] [S%v]->[S%v] fail, reduce prevLogIdx->%v", rf.me, i, reply.XIdx)
+						}
+					} else if reply.XLogLen != -1 {
+						atomic.StoreInt32(&rf.NextIdxs[i], int32(reply.XLogLen))
+						util.Logger.Printf("[HeartBeat] [S%v]->[S%v] fail, reduce prevLogIdx->%v", rf.me, i, reply.XLogLen)
+					} else {
+						atomic.StoreInt32(&rf.NextIdxs[i], prevLogIdx)
+						util.Logger.Printf("[HeartBeat] [S%v]->[S%v] fail, reduce prevLogIdx->%v", rf.me, i, prevLogIdx)
 					}
-					atomic.StoreInt32(&rf.NextIdxs[i], prevLogIdx)
 				}
 			}
 		}()
@@ -881,6 +904,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
+	// Term相等
+	if args.Term == rf.Term {
+		// 当前Server的Leader非请求中的Server,拒绝
+		if serverStatus == ServerStatusFollower && rf.VoteIdx != -1 && rf.VoteIdx != args.LeaderIdx {
+			result = util.IntPtr(AppendEntriesResultDenyTermEqualDiffLeader)
+			return
+		}
+		// 当前已经是leader，同步失败
+		if serverStatus == ServerStatusLeader {
+			result = util.IntPtr(AppendEntriesResultDenyTermEqualNowLeader)
+			return
+		}
+	}
+
 	// Prev Log Term 不合法 当前server不存在PrevLogIdx的Log或者该log term不一致 这里要让leader主动重试
 	if args.PrevLogIdx >= 0 && (args.PrevLogIdx > len(rf.Logs)-1 || rf.Logs[args.PrevLogIdx].Term != args.PrevLogTerm) {
 		// 这里要给Leader一个机会
@@ -902,21 +939,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		return
 	}
-
-	// Term相等
-	if args.Term == rf.Term {
-		// 当前Server的Leader非请求中的Server,拒绝
-		if serverStatus == ServerStatusFollower && rf.VoteIdx != -1 && rf.VoteIdx != args.LeaderIdx {
-			result = util.IntPtr(AppendEntriesResultDenyTermEqualDiffLeader)
-			return
-		}
-		// 当前已经是leader，同步失败
-		if serverStatus == ServerStatusLeader {
-			result = util.IntPtr(AppendEntriesResultDenyTermEqualNowLeader)
-			return
-		}
-	}
-
 	/*
 		1. term > 当前server term
 		2. term == 当前server term
@@ -1036,7 +1058,7 @@ func (rf *Raft) SendHeartBeat() {
 						if !reply.Success && prevLogIdx >= 0 {
 							if reply.XTerm != -1 {
 								rf.mu.Lock()
-								firstCommand := rf.findTermFirstCommand(reply.Term)
+								firstCommand := rf.findTermLastCommand(reply.XTerm)
 								rf.mu.Unlock()
 								if firstCommand != nil {
 									atomic.StoreInt32(&rf.NextIdxs[i], int32(firstCommand.Idx))
@@ -1062,7 +1084,7 @@ func (rf *Raft) SendHeartBeat() {
 						// 更新NextIdx以及MatchIdxs
 						rf.mu.Lock()
 						atomic.StoreInt32(&rf.NextIdxs[i], int32(len(logs)))
-						rf.MatchIdxs[i] = int32(len(logs) - 1)
+						atomic.StoreInt32(&rf.MatchIdxs[i], int32(len(logs)-1))
 						util.Logger.Printf("[HeartBeat] success, update NextIdxs[%v]->%v, MatchIdxs[%v]->%v", i, len(logs), i, len(logs)-1)
 						rf.mu.Unlock()
 						atomic.AddInt32(&successCnt, -1)
@@ -1137,14 +1159,14 @@ func (rf *Raft) UpdateCommitedIdx() {
 		}
 		cnt := 0
 		for j := range rf.peers {
-			if j == i || j == rf.me {
+			if j == rf.me {
 				continue
 			}
 			if rf.MatchIdxs[j] >= rf.MatchIdxs[i] {
 				cnt++
 			}
 		}
-		if cnt >= len(rf.peers)/2-1 && int(rf.MatchIdxs[i]) > maxIdx && int(rf.MatchIdxs[i]) < len(rf.Logs) {
+		if cnt >= len(rf.peers)/2 && int(rf.MatchIdxs[i]) > maxIdx && int(rf.MatchIdxs[i]) < len(rf.Logs) {
 			maxIdx = int(rf.MatchIdxs[i])
 		}
 	}
