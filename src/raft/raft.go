@@ -414,8 +414,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if !isLeader {
 		return -1, -1, false
 	}
-	util.Logger.Printf("[Start] [S%v] [T%v] command = %v", rf.me, rf.Term, util.JSONMarshal(command))
 	rf.mu.Lock()
+	util.Logger.Printf("[Start] [S%v] [T%v] command = %v", rf.me, rf.Term, util.JSONMarshal(command))
 	term := rf.Term
 	log := &Log{
 		Term:    term,
@@ -441,11 +441,12 @@ func (rf *Raft) CommitIdx(idx int) {
 		//util.Logger.Printf("[CommitIdx] [S%v] [T%v] commit idx %v <= rf.CommitedIdx %v, not need commit", rf.me, rf.Term, idx, rf.CommittedIdx)
 		return
 	}
+	idx = util.Min(idx, len(rf.Logs))
 	//util.Logger.Printf("[CommitIdx] [S%v] [T%v] commit idx %v", rf.me, rf.Term, idx)
-	if idx >= len(rf.Logs) {
-		util.Logger.Printf("[CommitIdx] [S%v] [T%v] commit idx %v > len(rf.Logs) %v, not need commit", rf.me, rf.Term, idx, len(rf.Logs))
-		return
-	}
+	// if idx >= len(rf.Logs) {
+	// 	util.Logger.Printf("[CommitIdx] [S%v] [T%v] commit idx %v > len(rf.Logs) %v, not need commit", rf.me, rf.Term, idx, len(rf.Logs))
+	// 	return
+	// }
 	for i := rf.CommittedIdx + 1; i <= idx; i++ {
 		rf.ApplyMsgCh <- ApplyMsg{
 			CommandValid: true,
@@ -833,7 +834,7 @@ func (rf *Raft) SendHeartBeat() {
 		if status != ServerStatusLeader {
 			continue
 		}
-		rf.SendAppendEntries()
+		go rf.SendAppendEntries()
 	}
 	util.Logger.Printf("[SendHeartBeat] [S%v] stop send heart beat", rf.me)
 }
@@ -841,6 +842,11 @@ func (rf *Raft) SendHeartBeat() {
 func (rf *Raft) SendAppendEntries() bool {
 	rf.mu.Lock()
 	term := rf.Term
+	rf.mu.Unlock()
+
+	rf.mu.Lock()
+	util.Logger.Printf("[SendAppendEntries]NextIdxs=%v", util.JSONMarshal(rf.NextIdxs))
+	util.Logger.Printf("[SendAppendEntries]MatchIdxs=%v", util.JSONMarshal(rf.MatchIdxs))
 	rf.mu.Unlock()
 
 	successCnt, replys, closeCh := int32(len(rf.peers)/2), make([]*AppendEntriesReply, len(rf.peers)), make(chan struct{})
@@ -993,13 +999,13 @@ func (rf *Raft) getNextIdx(i int) int32 {
 // storeNextIdx 调用此函数需要加锁，因为在UpdateCommitIndex中会encode NextIdx数组
 func (rf *Raft) storeNextIdx(i int, value int32) {
 	atomic.StoreInt32(&rf.NextIdxs[i], value)
-	util.Logger.Printf("[storeNextIdx] [S%v] update-> [%v]", rf.me, value)
+	util.Logger.Printf("[storeNextIdx] [S%v] update-> [%v]", i, value)
 }
 
 // storeMatchIdx 调用此函数需要加锁，因为在UpdateCommitIndex中会encode MatchIdxs数组
 func (rf *Raft) storeMatchIdx(i int, value int32) {
 	atomic.StoreInt32(&rf.MatchIdxs[i], value)
-	util.Logger.Printf("[storeMatchIdx] [S%v] update-> [%v]", rf.me, value)
+	util.Logger.Printf("[storeMatchIdx] [S%v] update-> [%v]", i, value)
 }
 
 // 根据MatchIdxs更新commitedIdx, 须持有锁
