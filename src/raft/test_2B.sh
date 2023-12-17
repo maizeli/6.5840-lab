@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# test_names=("TestBasicAgree2B" "TestRPCBytes2B" "TestFollowerFailure2B" "TestLeaderFailure2B" "TestFailAgree2B" "TestFailNoAgree2B" "TestConcurrentStarts2B" "TestRejoin2B" "TestBackup2B" "TestCount2B")
- test_names=("TestBackup2B" "TestCount2B")
+test_names=("TestBasicAgree2B" "TestRPCBytes2B" "TestFollowerFailure2B" "TestLeaderFailure2B" "TestFailAgree2B" "TestFailNoAgree2B" "TestConcurrentStarts2B" "TestRejoin2B" "TestBackup2B" "TestCount2B")
+#  test_names=("TestBackup2B" "TestCount2B")
 # test_names=("TestPersist12C" "TestPersist22C" "TestPersist32C" "TestFigure82C" "TestUnreliableAgree2C" "TestFigure8Unreliable2C" "TestReliableChurn2C" "TestUnreliableChurn2C")
 #test_names=("TestFigure8Unreliable2C" "TestReliableChurn2C" "TestUnreliableChurn2C")
 
@@ -11,7 +11,7 @@ while [ $j -lt $total ]; do
 	echo "Running ${test_names[$j]}..."
 	i=1
 	flag=0
-	while [ $i -le 1000 ]; do
+	while [ $i -le 50 ]; do
 		date
 		echo -e "\tRunning ${test_names[$j]} iteration $i..."
 		rm -rf log*.txt
