@@ -508,8 +508,6 @@ func (rf *Raft) CommitIdx(idx int) {
 		}
 	}
 	rf.CommittedIdx = idx
-	// 持久化
-	rf.persist()
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -915,6 +913,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.Logs = rf.Logs[:lastUpdateLogIdx+1]
 	}
 	rf.CommitIdx(args.LeaderCommitIdx)
+	rf.persist()
 }
 
 // SendHeartBeat 发送心跳
@@ -1151,6 +1150,7 @@ func (rf *Raft) UpdateCommitedIdx() {
 	}
 	if canCommitIdx > rf.CommittedIdx {
 		rf.CommitIdx(canCommitIdx)
+		rf.persist()
 	}
 }
 
