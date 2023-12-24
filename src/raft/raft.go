@@ -924,7 +924,7 @@ func (rf *Raft) SendHeartBeat() {
 	for !rf.killed() {
 		time.Sleep(time.Duration(rf.HeartbeatInterval * int(time.Millisecond)))
 		rf.mu.Lock()
-		if time.Now().Unix()-rf.LastHeartbeatTime >= int64(rf.ElectionTimeout) {
+		if time.Now().UnixMilli()-rf.LastHeartbeatTime >= int64(rf.ElectionTimeout) {
 			rf.changeStatus(ServerStatusFollower, -1, false)
 		}
 		status := rf.ServerStatus
