@@ -329,6 +329,17 @@ c. Term < 当前 NO
 
 2B增加判断
 在2A的基础上判断args.LastLogTerm以及args.LastLogIndex是否>=当前server的
+
+TODO  TestFailNoAgree2B中这段代码实现好像有点问题，比如执行完336行之后,leader2因为某些原因不再是leader，这里338的判断就不对了
+	// the disconnected majority may have chosen a leader from
+	// among their own ranks, forgetting index 2.
+	leader2 := cfg.checkOneLeader()
+	index2, _, ok2 := cfg.rafts[leader2].Start(30)
+	if ok2 == false {
+		t.Fatalf("leader2 rejected Start()")
+	}
+
+
 */
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
@@ -337,9 +348,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//util.Logger.Printf("[RequestVote] [S%v] [T%v] recv [S%v] [T%v] RequestVote", rf.me, rf.Term, args.ServerIdx, args.Term)
 	defer func() {
 		if reply.IsVote {
-			util.Logger.Printf("[RequestVote] [S%v] [T%v] vote for [S%v] [T%v] RequestVote", rf.me, rf.Term, args.ServerIdx, rf.Term)
+			util.Logger.Printf("[RequestVote] [S%v] [T%v] vote for [S%v] [T%v] RequestVote", rf.me, rf.Term, args.ServerIdx, args.Term)
 		} else {
-			util.Logger.Printf("[RequestVote] [S%v] [T%v] deny [S%v] [T%v] RequestVote:%v", rf.me, rf.Term, args.ServerIdx, rf.me, reply.DenyReason)
+			util.Logger.Printf("[RequestVote] [S%v] [T%v] deny [S%v] [T%v] RequestVote:%v", rf.me, rf.Term, args.ServerIdx, args.Term, reply.DenyReason)
 		}
 	}()
 	reply.Term = rf.Term
@@ -373,6 +384,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if args.Term == rf.Term {
+		// Last Log比较
+		if args.LastLogTerm < lastLogTerm {
+			reply.DenyReason = fmt.Sprintf("last log term less: [T%v] < [T%v]", args.LastLogTerm, lastLogTerm)
+			return
+		}
+		if args.LastLogTerm == lastLogTerm && args.LastLogIdx < lastLogIdx {
+			reply.DenyReason = fmt.Sprintf("last log idx less: [I%v] < [I%v]", args.LastLogIdx, lastLogIdx)
+			return
+		}
 		if rf.VoteIdx == -1 || rf.VoteIdx == args.ServerIdx {
 			reply.IsVote = true
 			rf.changeStatus(ServerStatusFollower, args.ServerIdx, true)
@@ -1137,11 +1157,17 @@ func (rf *Raft) UpdateCommitedIdx() {
 				cnt++
 			}
 		}
+		// TODO 2D 这里的判断需要改下 直接去掉后面的长度判断？
 		if cnt >= len(rf.peers)/2 && int(rf.MatchIdxs[i]) > maxIdx && int(rf.MatchIdxs[i]) < len(rf.Logs) {
 			maxIdx = int(rf.MatchIdxs[i])
 		}
 	}
 	canCommitIdx := -1
+	// TODO 这里也要改下
+	// 只有当前任期的Log会被提交，是为了解决Raft论文中Figure8导致的问题，同时又引入了一个新问题
+	// 如果log被复制到大多数server，leader在提交这条log之前crash掉了，新上任的leader如果没有添加新Log的机会
+	// 前任leader的最后一条log永远不会被commit
+	// Raft针对这种场景的解决方式是Leader上任之后添加一条no-op的特殊Log，用于安全提交上一任的Log
 	for i := maxIdx; i > rf.CommittedIdx; i-- {
 		if rf.Logs[i].Term == rf.Term {
 			canCommitIdx = i

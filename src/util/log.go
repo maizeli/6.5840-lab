@@ -1,10 +1,8 @@
 package util
 
 import (
-	"fmt"
 	"log"
 	"os"
-	"time"
 )
 
 const (
@@ -17,10 +15,10 @@ const (
 var Logger *log.Logger
 
 func init() {
-	file, err := os.Create(fmt.Sprintf("log-%v.txt", time.Now().Unix()))
-	if err != nil {
-		panic(err)
-	}
-	Logger = log.New(file, "", log.Lshortfile|log.Lmicroseconds)
+	// file, err := os.Create(fmt.Sprintf("log-%v.txt", time.Now().Unix()))
+	// if err != nil {
+	// 	panic(err)
+	// }
+	Logger = log.New(os.Stdout, "", log.Lshortfile|log.Lmicroseconds)
 	// Logger.SetOutput(io.Discard)
 }
