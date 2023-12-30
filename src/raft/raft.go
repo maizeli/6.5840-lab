@@ -170,6 +170,14 @@ func (rf *Raft) GetState() (int, bool) {
 // 当前server当选leader之后需要做的初始化工作
 // 1. 重置NextIdxMap TODO 这里是否使用CommittedIdx
 func (rf *Raft) LeaderInit() {
+	// 当选Leader之后添加一条空命令 这里添加空命令之后Index就不对了
+	// idx, _ := rf.getLastIdxAndTerm()
+	// rf.Logs = append(rf.Logs, &Log{
+	// 	Idx:     idx + 1,
+	// 	Term:    rf.Term,
+	// 	Command: 0,
+	// })
+	// rf.LogIdxMapping[idx+1] = len(rf.Logs) - 1
 	util.Logger.Printf("[LeaderInit] [S%v] [T%v] start...", rf.me, rf.Term)
 	rf.MatchIdxs, rf.NextIdxs = make([]int32, len(rf.peers)), make([]int32, len(rf.peers))
 	lastLogIdx, _ := rf.getLastIdxAndTerm()
@@ -477,6 +485,26 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 目前看是commit的时机不对
 
 上述分析不对，不是commit的时机不对，而是Start获取当前Log应该放到最新的一条Log，而不是已经Commit的LogIdx+1
+
+又引入一个新问题
+5个server
+t1: T1 server0为leader,5个server在idx0添加并提交日志log1
+t2: T1 server0在idx1添加log2
+t3: server0 crash
+t4: T2 server1当选leader(在2/3/4的投票下)
+t5: T2 server1在idx1添加log3
+t6: server1 crash
+t7: T3 server0恢复，并重新当选leader(在2/3/4的投票下)
+t8: T3 server0将log2成功复制到server2\server3\server4
+t9: T3 server0提交log2 这一步不可能发生，此时server0不会提交log2,Log2的Term是T1，
+t10: server0 crash
+t11: T4 server1恢复，并重新当选leader
+t12: T4 server1将log3复制到server2/server3/server4
+t13: T4 server1提交log3 这一步不可能发生 log3的Term时T2
+t14: server2/server3/server4提交log3
+此时server0在idx1提交了log2，而server1/server2/server3/server4在idx1提交了log3，似乎是违反了raft的协议
+
+解决方案还是得在当选Leaer之后Start了一个空命令
 */
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// 加锁保证只有一个Start在运行
@@ -885,7 +913,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				reply.XIdx = rf.Logs[termIdx].Idx
 			}
 		}
-		if reply.XIdx == -1 {
+		if reply.XIdx == -1 && rf.SnapshotInfo != nil {
 			reply.XIdx = rf.SnapshotInfo.LastIncludedIdx + 1
 		}
 		// TODO 这里后续使用Snapshot之后要修改
@@ -1167,7 +1195,7 @@ func (rf *Raft) UpdateCommitedIdx() {
 	// 只有当前任期的Log会被提交，是为了解决Raft论文中Figure8导致的问题，同时又引入了一个新问题
 	// 如果log被复制到大多数server，leader在提交这条log之前crash掉了，新上任的leader如果没有添加新Log的机会
 	// 前任leader的最后一条log永远不会被commit
-	// Raft针对这种场景的解决方式是Leader上任之后添加一条no-op的特殊Log，用于安全提交上一任的Log
+	// Raft针对这种场景的解决方式是Leader上任之后添加一条no-op的特殊Log，用于安全提交上一任的Log。但是在本实验中就不能使用了，不然没法通过测试代码
 	for i := maxIdx; i > rf.CommittedIdx; i-- {
 		if rf.Logs[i].Term == rf.Term {
 			canCommitIdx = i
