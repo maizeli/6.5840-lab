@@ -283,15 +283,24 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	// 调用Sanpshot的地方index是从1开始的
+	index--
+	realIdx, _ := rf.getLogByIdx(index)
+	util.Logger.Printf("[S%v] [T%v] Snapshot index=%v, realIndex=%v", rf.me, rf.Term, index, realIdx)
 
 	util.Logger.Printf("[S%v] [T%v] Snapshot %v", rf.me, rf.Term, index)
-	log := rf.Logs[index]
+	log := rf.Logs[realIdx]
 	snapshotInfo := &SnapshotInfo{
 		Data:             snapshot,
 		LastIncludedIdx:  index,
 		LastIncludedTerm: log.Term,
 	}
 	rf.SnapshotInfo = snapshotInfo
+
+	for i := 0; i <= realIdx; i++ {
+		delete(rf.LogIdxMapping, rf.Logs[i].Idx)
+	}
+	rf.Logs = rf.Logs[realIdx+1:]
 }
 
 // example RequestVote RPC arguments structure.
@@ -422,8 +431,42 @@ type InstallSnapshotReply struct {
 	Term int
 }
 
+/*
+InstallSnapshot
+这里只要args.Term >= rf.Term就只需要无条件的更新Snapshot吗
+*/
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	util.Logger.Printf("InstallSnapshot [S%v] [T%v] args=%v", rf.me, rf.Term, util.JSONMarshal(args))
 
+	reply.Term = rf.Term
+	if args.Term < rf.Term {
+		util.Logger.Printf("[InstallSnapshot] [S%v] [T%v] term less", rf.me, rf.Term)
+		return
+	}
+
+	if rf.SnapshotInfo != nil {
+		if rf.SnapshotInfo.LastIncludedIdx > args.LastIncludedIdx {
+			util.Logger.Printf("[InstallSnapshot] [S%v] [T%v] old snapshot", rf.me, rf.Term)
+			return
+		}
+	}
+
+	snapshotInfo := &SnapshotInfo{
+		LastIncludedIdx:  args.LastIncludedIdx,
+		LastIncludedTerm: args.LastIncludedTerm,
+		Data:             args.Data,
+	}
+	rf.SnapshotInfo = snapshotInfo
+	util.Logger.Printf("S%v T%v begin send snapshot channel", rf.me, rf.Term)
+	rf.ApplyMsgCh <- ApplyMsg{
+		SnapshotValid: true,
+		Snapshot:      snapshotInfo.Data,
+		SnapshotTerm:  snapshotInfo.LastIncludedTerm,
+		SnapshotIndex: snapshotInfo.LastIncludedIdx,
+	}
+	util.Logger.Printf("S%v T%v over send snapshot channel", rf.me, rf.Term)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -625,10 +668,6 @@ func (rf *Raft) StartElection() {
 	}
 	rf.Term += 1
 	localTerm := rf.Term
-	/*
-		TODO 2D
-		lastLog只是用来取LastIncludedIdx以及LastIncludedTerm
-	*/
 	lastLogIdx, lastLogTerm := rf.getLastIdxAndTerm()
 	rf.mu.Unlock()
 
@@ -698,6 +737,7 @@ func (rf *Raft) StartElection() {
 	// 改变当前状态
 	if maxTerm > rf.Term {
 		// 这里不应该更新心跳时间？好发起下一次
+		rf.Term = maxTerm
 		rf.changeStatus(ServerStatusFollower, -1, false)
 		return
 	}
@@ -830,6 +870,10 @@ S3网络恢复，由于此时S3的Term比较大，S1 -> S3的心跳被S3拒绝�
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	util.Logger.Printf("AppendEntries [S%v] [T%v] recv args:%v", rf.me, rf.Term, util.JSONMarshal(args))
+	defer func(reply *AppendEntriesReply) {
+		util.Logger.Printf("AppendEntries [S%v] [T%v] reply=%v", rf.me, rf.Term, util.JSONMarshal(reply))
+	}(reply)
 	// util.Logger.Printf("[AppendEntries] [S%v] [T%v] recv [S%v] [T%v]", rf.me, rf.Term, args.LeaderIdx, args.Term)
 
 	term := rf.Term
@@ -894,20 +938,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			return
 		}
 	}
-	// rf.SnapshotInfo == nil || (rf.SnapshotInfo != nil && args.PrevLogIdx > rf.SnapshotInfo.LastIncludedIdx)
+	// rf.SnapshotInfo == nil || (rf.SnapshotInfo != nil && args.PrevLogIdx > rf.SnapshotInfo.LastIncludedIdx) || (rf.SnapshotInfo!= nil && args.PrevLogIdx == rf.SnapshotInfo.LastIncludeIdx && args.PrevLogTerm == rf.SnapshotInfo.LastIncludedTerm)
 	lastLogIdx, _ := rf.getLastIdxAndTerm()
 	prevLogIdx, prevLog := rf.getLogByIdx(args.PrevLogIdx)
+	// 这里考虑 args.PrevLogIdx == rf.SnapshotInfo.LastIncludedIdx的情况,此时prevLog==nil，但是也是合法的
 	if args.PrevLogIdx >= 0 && prevLog == nil {
-		util.Logger.Printf("args.PrevLogIdx=%v, prevLog==nil", args.PrevLogIdx)
-		rf.changeStatus(ServerStatusFollower, args.LeaderIdx, true)
-		result = util.IntPtr(AppendEntriesResultDenyInvalidPrevLog)
-		reply.XLogLen = lastLogIdx + 1
-		return
+		if rf.SnapshotInfo == nil {
+			util.Logger.Printf("args.PrevLogIdx=%v, prevLog==nil", args.PrevLogIdx)
+			rf.changeStatus(ServerStatusFollower, args.LeaderIdx, true)
+			result = util.IntPtr(AppendEntriesResultDenyInvalidPrevLog)
+			reply.XLogLen = lastLogIdx + 1
+			return
+		} else {
+			// 存在SnapshotInfo时，考虑prevLogIdx == rf.SnapshotInfo.LastIncludedIdx的情况
+			if rf.SnapshotInfo.LastIncludedIdx != args.PrevLogIdx {
+				rf.changeStatus(ServerStatusFollower, args.LeaderIdx, true)
+				result = util.IntPtr(AppendEntriesResultDenyInvalidPrevLog)
+				reply.XLogLen = rf.SnapshotInfo.LastIncludedIdx + 1
+				return
+			}
+		}
 	}
 	if prevLog != nil && prevLog.Term != args.PrevLogTerm {
 		rf.changeStatus(ServerStatusFollower, args.LeaderIdx, true)
 		result = util.IntPtr(AppendEntriesResultDenyInvalidPrevLog)
-		reply.XTerm = rf.Logs[args.PrevLogIdx].Term
+		reply.XTerm = prevLog.Term
 		for termIdx := prevLogIdx; termIdx >= 0; termIdx-- {
 			if rf.Logs[termIdx].Term == rf.Logs[prevLogIdx].Term {
 				reply.XIdx = rf.Logs[termIdx].Idx
@@ -916,8 +971,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if reply.XIdx == -1 && rf.SnapshotInfo != nil {
 			reply.XIdx = rf.SnapshotInfo.LastIncludedIdx + 1
 		}
-		// TODO 这里后续使用Snapshot之后要修改
-		reply.XLogLen = len(rf.Logs)
+		reply.XLogLen = lastLogIdx + 1
 		return
 	}
 
@@ -973,6 +1027,7 @@ func (rf *Raft) SendHeartBeat() {
 		time.Sleep(time.Duration(rf.HeartbeatInterval * int(time.Millisecond)))
 		rf.mu.Lock()
 		if time.Now().UnixMilli()-rf.LastHeartbeatTime >= int64(rf.ElectionTimeout) {
+			rf.Term += 1
 			rf.changeStatus(ServerStatusFollower, -1, false)
 		}
 		status := rf.ServerStatus
@@ -985,14 +1040,38 @@ func (rf *Raft) SendHeartBeat() {
 	util.Logger.Printf("[SendHeartBeat] [S%v] stop send heart beat", rf.me)
 }
 
+// Call 带有超时时间的Call，默认时间为一秒
+func (rf *Raft) Call(svr string, peer int, args, reply interface{}, timeouts ...time.Duration) (ok bool, isTimeout bool) {
+	t := time.Second
+	if len(timeouts) > 0 {
+		t = timeouts[0]
+	}
+	closeCh := make(chan struct{})
+	go func() {
+		defer func() {
+			close(closeCh)
+		}()
+		ok = rf.peers[peer].Call(svr, args, reply)
+	}()
+	timer := time.After(t)
+	select {
+	case _ = <-timer:
+		isTimeout = true
+		return
+	case _ = <-closeCh:
+		return
+	}
+}
+
 func (rf *Raft) SendAppendEntries() bool {
+	now := time.Now()
 	rf.mu.Lock()
 	term := rf.Term
 	rf.mu.Unlock()
 
 	rf.mu.Lock()
-	util.Logger.Printf("[SendAppendEntries]NextIdxs=%v", util.JSONMarshal(rf.NextIdxs))
-	util.Logger.Printf("[SendAppendEntries]MatchIdxs=%v", util.JSONMarshal(rf.MatchIdxs))
+	util.Logger.Printf("[SendAppendEntries]NextIdxs=%v, time=%v", util.JSONMarshal(rf.NextIdxs), now)
+	util.Logger.Printf("[SendAppendEntries]MatchIdxs=%v, time=%v", util.JSONMarshal(rf.MatchIdxs), now)
 	rf.mu.Unlock()
 
 	successCnt, replys, closeCh := int32(len(rf.peers)/2), make([]*AppendEntriesReply, len(rf.peers)), make(chan struct{})
@@ -1003,12 +1082,6 @@ func (rf *Raft) SendAppendEntries() bool {
 		}
 		i, peer := i, peer
 		wg.Add(1)
-		/*
-			TODO 2D
-			1. prevLogIdx<当前快照的LastLogIdx应该先阻塞并发送快照
-			2. 如何快速获取prevLogIdx之后的Log,建立一个mapping放入到args
-
-		*/
 		go func() {
 			defer wg.Done()
 			for !rf.killed() {
@@ -1016,10 +1089,12 @@ func (rf *Raft) SendAppendEntries() bool {
 				case <-closeCh:
 					return
 				default:
+					util.Logger.Printf("SendAppendEntries [S%v] [T%v] -> %v start, time=%v", rf.me, rf.Term, i, now)
 					rf.mu.Lock()
 					rf.UpdateCommitedIdx()
 					committedIdx := rf.CommittedIdx
 					allLogs := rf.Logs
+					snapshotInfo := rf.SnapshotInfo
 
 					if rf.ServerStatus != ServerStatusLeader {
 						rf.mu.Unlock()
@@ -1031,9 +1106,43 @@ func (rf *Raft) SendAppendEntries() bool {
 						prevLogIdx      = int(rf.getNextIdx(i) - 1)
 						prevLogTerm int = -1
 					)
+					rf.mu.Unlock()
+					// 需要发送快照
+					if len(allLogs) > 0 && prevLogIdx+1 < allLogs[0].Idx && snapshotInfo != nil {
+						snapshotArg, snapshotReply := &InstallSnapshotArgs{
+							Data:             snapshotInfo.Data,
+							LastIncludedIdx:  snapshotInfo.LastIncludedIdx,
+							LastIncludedTerm: snapshotInfo.LastIncludedTerm,
+						}, &InstallSnapshotReply{}
+						ok, isTimeout := rf.Call("Raft.InstallSnapshot", i, snapshotArg, snapshotReply, time.Duration(rf.ElectionTimeout)*time.Millisecond)
+						if !ok || isTimeout {
+							continue
+						}
+
+						rf.mu.Lock()
+						if rf.Term != term {
+							rf.mu.Unlock()
+							return
+						}
+						if snapshotReply.Term > term {
+							rf.changeStatus(ServerStatusFollower, -1, true)
+							rf.Term = snapshotReply.Term
+							rf.mu.Unlock()
+							return
+						}
+						rf.storeNextIdx(i, int32(snapshotInfo.LastIncludedIdx)+1)
+						rf.mu.Unlock()
+					}
+					rf.mu.Lock()
+					// 需要重新获取一下prevLogIdx
+					prevLogIdx = int(rf.getNextIdx(i) - 1)
 					realPrevLogIdx, prevLog := rf.getLogByIdx(prevLogIdx)
-					if prevLogIdx >= -1 && realPrevLogIdx < len(allLogs) {
+					if realPrevLogIdx < len(allLogs) {
 						logs = append([]*Log{}, allLogs[realPrevLogIdx+1:]...)
+					}
+					// 处理下prevLogIdx == snapshotInfo.LastIncludedIdx的情况
+					if snapshotInfo != nil && prevLogIdx == snapshotInfo.LastIncludedIdx {
+						prevLogTerm = snapshotInfo.LastIncludedTerm
 					}
 					if prevLog != nil {
 						prevLogTerm = prevLog.Term
@@ -1046,6 +1155,7 @@ func (rf *Raft) SendAppendEntries() bool {
 						Logs:            logs,
 						LeaderCommitIdx: committedIdx,
 					}
+					util.Logger.Printf("SendAppendEntries [S%v] [T%v] begin send AppendEntries, args=%v, time=%v", rf.me, rf.Term, util.JSONMarshal(req), now)
 					rf.mu.Unlock()
 
 					reply := &AppendEntriesReply{}
@@ -1104,11 +1214,12 @@ func (rf *Raft) SendAppendEntries() bool {
 			}
 		}()
 	}
+	util.Logger.Printf("[SendAppendEntries] [S%v] [T%v] over, begin wait, time=%v", rf.me, rf.Term, now)
 	timeout := util.WaitWithTimeout(&wg, time.Duration(rf.ElectionTimeout)*time.Millisecond, &successCnt)
 	if timeout {
-		util.Logger.Printf("[SendAppendEntries] [S%v] [T%v] timeout", rf.me, term)
+		util.Logger.Printf("[SendAppendEntries] [S%v] [T%v] timeout, time=%v", rf.me, term, now)
 	} else {
-		util.Logger.Printf("[SendAppendEntries] [S%v] [T%v] success", rf.me, term)
+		util.Logger.Printf("[SendAppendEntries] [S%v] [T%v] success, time=%v", rf.me, term, now)
 	}
 	close(closeCh)
 
@@ -1186,19 +1297,20 @@ func (rf *Raft) UpdateCommitedIdx() {
 			}
 		}
 		// TODO 2D 这里的判断需要改下 直接去掉后面的长度判断？
-		if cnt >= len(rf.peers)/2 && int(rf.MatchIdxs[i]) > maxIdx && int(rf.MatchIdxs[i]) < len(rf.Logs) {
+		if cnt >= len(rf.peers)/2 && int(rf.MatchIdxs[i]) > maxIdx {
 			maxIdx = int(rf.MatchIdxs[i])
 		}
 	}
 	canCommitIdx := -1
-	// TODO 这里也要改下
 	// 只有当前任期的Log会被提交，是为了解决Raft论文中Figure8导致的问题，同时又引入了一个新问题
 	// 如果log被复制到大多数server，leader在提交这条log之前crash掉了，新上任的leader如果没有添加新Log的机会
 	// 前任leader的最后一条log永远不会被commit
 	// Raft针对这种场景的解决方式是Leader上任之后添加一条no-op的特殊Log，用于安全提交上一任的Log。但是在本实验中就不能使用了，不然没法通过测试代码
-	for i := maxIdx; i > rf.CommittedIdx; i-- {
+	endIdx, _ := rf.getLogByIdx(maxIdx)
+	startIdx, _ := rf.getLogByIdx(rf.CommittedIdx)
+	for i := endIdx; i > startIdx; i-- {
 		if rf.Logs[i].Term == rf.Term {
-			canCommitIdx = i
+			canCommitIdx = rf.Logs[i].Idx
 			break
 		}
 	}
