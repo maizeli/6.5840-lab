@@ -591,7 +591,9 @@ func (rf *Raft) CommitIdx(idx int) {
 	//util.Logger.Printf("[CommitIdx] [S%v] [T%v] commit idx %v", rf.me, rf.Term, idx)
 	startIdx, _ := rf.getLogByIdx(rf.CommittedIdx + 1)
 	endIdx, _ := rf.getLogByIdx(idx)
+	util.Logger.Printf("CommitIdx startIdx=%v, endIdx=%v", startIdx, endIdx)
 	for i := startIdx; i <= endIdx; i++ {
+		util.Logger.Printf("CommitIdx begin commit %v", i)
 		rf.ApplyMsgCh <- ApplyMsg{
 			CommandValid: true,
 			Command:      rf.Logs[i].Command,
@@ -870,9 +872,9 @@ S3网络恢复，由于此时S3的Term比较大，S1 -> S3的心跳被S3拒绝�
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	util.Logger.Printf("AppendEntries [S%v] [T%v] recv args:%v", rf.me, rf.Term, util.JSONMarshal(args))
+	//util.Logger.Printf("AppendEntries [S%v] [T%v] recv args:%v", rf.me, rf.Term, util.JSONMarshal(args))
 	defer func(reply *AppendEntriesReply) {
-		util.Logger.Printf("AppendEntries [S%v] [T%v] reply=%v", rf.me, rf.Term, util.JSONMarshal(reply))
+		//util.Logger.Printf("AppendEntries [S%v] [T%v] reply=%v", rf.me, rf.Term, util.JSONMarshal(reply))
 	}(reply)
 	// util.Logger.Printf("[AppendEntries] [S%v] [T%v] recv [S%v] [T%v]", rf.me, rf.Term, args.LeaderIdx, args.Term)
 
@@ -885,7 +887,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Result = *result
 		switch *result {
 		case AppendEntriesResultSuccess:
-			util.Logger.Printf("[AppendEntries] [S%v] [T%v]->[T%v] allow [S%v] AppendEntries", rf.me, args.Term, rf.Term, args.LeaderIdx)
+			util.Logger.Printf("[AppendEntries] [S%v] [T%v]->[T%v] allow [S%v] AppendEntries, logs=%v", rf.me, args.Term, rf.Term, args.LeaderIdx, util.JSONMarshal(rf.Logs))
 		case AppendEntriesResultDenyTermEqualDiffLeader:
 			util.Logger.Printf("[AppendEntries] [S%v] [T%v]->[T%v] [L%v]->[L%v] deny [S%v] AppendEntries: leader not equal", rf.me,
 				args.Term, rf.Term, args.LeaderIdx, localLeaderIdx, args.LeaderIdx)
@@ -988,7 +990,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Success = true
 	flag := false
 	// 这里不仅要添加，还要清除
-	lastUpdateLogIdx := -1
 	for _, argLog := range args.Logs {
 		logIdx, log := rf.getLogByIdx(argLog.Idx)
 		if log == nil {
@@ -1002,17 +1003,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.Logs[logIdx] = argLog
 		rf.LogIdxMapping[argLog.Idx] = logIdx
-		lastUpdateLogIdx = logIdx
 	}
 
 	// 删除冲突的Log
-	if flag && lastUpdateLogIdx != -1 {
-		for _, log := range rf.Logs[lastUpdateLogIdx+1:] {
+	if flag {
+		conflictIdx, _ := rf.getLogByIdx(util.Last(args.Logs).Idx)
+		for _, log := range rf.Logs[conflictIdx+1:] {
 			if log != nil {
 				delete(rf.LogIdxMapping, log.Idx)
 			}
 		}
-		rf.Logs = rf.Logs[:lastUpdateLogIdx+1]
+		rf.Logs = rf.Logs[:conflictIdx+1]
 	}
 	rf.CommitIdx(args.LeaderCommitIdx)
 	rf.persist()
@@ -1026,7 +1027,8 @@ func (rf *Raft) SendHeartBeat() {
 	for !rf.killed() {
 		time.Sleep(time.Duration(rf.HeartbeatInterval * int(time.Millisecond)))
 		rf.mu.Lock()
-		if time.Now().UnixMilli()-rf.LastHeartbeatTime >= int64(rf.ElectionTimeout) {
+		// Leader不需要主动变为Follower，等待其他Follower发起选举即可？ 不主动变为Follower之后，不知道为什么Start开始变慢了
+		if time.Now().UnixMilli()-rf.LastHeartbeatTime >= 3*int64(rf.ElectionTimeout) {
 			rf.Term += 1
 			rf.changeStatus(ServerStatusFollower, -1, false)
 		}
@@ -1067,9 +1069,6 @@ func (rf *Raft) SendAppendEntries() bool {
 	now := time.Now()
 	rf.mu.Lock()
 	term := rf.Term
-	rf.mu.Unlock()
-
-	rf.mu.Lock()
 	util.Logger.Printf("[SendAppendEntries]NextIdxs=%v, time=%v", util.JSONMarshal(rf.NextIdxs), now)
 	util.Logger.Printf("[SendAppendEntries]MatchIdxs=%v, time=%v", util.JSONMarshal(rf.MatchIdxs), now)
 	rf.mu.Unlock()
@@ -1114,6 +1113,7 @@ func (rf *Raft) SendAppendEntries() bool {
 							LastIncludedIdx:  snapshotInfo.LastIncludedIdx,
 							LastIncludedTerm: snapshotInfo.LastIncludedTerm,
 						}, &InstallSnapshotReply{}
+						util.Logger.Printf("SendAppendEntries [S%v] [T%v] snapshotArgs=%v", rf.me, rf.Term, util.JSONMarshal(snapshotArg))
 						ok, isTimeout := rf.Call("Raft.InstallSnapshot", i, snapshotArg, snapshotReply, time.Duration(rf.ElectionTimeout)*time.Millisecond)
 						if !ok || isTimeout {
 							continue
@@ -1214,7 +1214,7 @@ func (rf *Raft) SendAppendEntries() bool {
 			}
 		}()
 	}
-	util.Logger.Printf("[SendAppendEntries] [S%v] [T%v] over, begin wait, time=%v", rf.me, rf.Term, now)
+	//util.Logger.Printf("[SendAppendEntries] [S%v] [T%v] over, begin wait, time=%v", rf.me, rf.Term, now)
 	timeout := util.WaitWithTimeout(&wg, time.Duration(rf.ElectionTimeout)*time.Millisecond, &successCnt)
 	if timeout {
 		util.Logger.Printf("[SendAppendEntries] [S%v] [T%v] timeout, time=%v", rf.me, term, now)
@@ -1281,7 +1281,7 @@ func (rf *Raft) UpdateCommitedIdx() {
 	if rf.ServerStatus != ServerStatusLeader {
 		return
 	}
-	util.Logger.Printf("[UpdateCommitedIdx] [S%v] MatchIdxs=%v", rf.me, util.JSONMarshal(rf.MatchIdxs))
+	//util.Logger.Printf("[UpdateCommitedIdx] [S%v] MatchIdxs=%v", rf.me, util.JSONMarshal(rf.MatchIdxs))
 	maxIdx := -1
 	for i := range rf.peers {
 		if i == rf.me {
