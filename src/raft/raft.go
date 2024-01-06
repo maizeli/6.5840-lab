@@ -74,17 +74,20 @@ type Raft struct {
 	NextIdxs     []int32
 	MatchIdxs    []int32
 	ApplyMsgCh   chan ApplyMsg
-	CommittedIdx int        // 已经提交的Idx
+	CommittedIdx int        // 可以提交的Idx
+	LastApplyIdx int        // 已经提交的Idx
 	StartMu      sync.Mutex // 用于保证Start的串行性
+	CommitMu     sync.Mutex // 一个server不能同时提交
 	// 2D
 	SnapshotInfo  *SnapshotInfo // 快照信息
 	LogIdxMapping map[int]int   // Key=Command.Idx Value=Command在rf.Logs中的Idx
 }
 
 type SnapshotInfo struct {
-	Data             []byte
-	LastIncludedIdx  int
-	LastIncludedTerm int
+	Data             []byte // config.go传递
+	LastIncludedIdx  int    // config.go传递
+	LastIncludedTerm int    // SnapshotInfo 增加
+	Logs             []interface{}
 }
 
 func (rf *Raft) findTermLastCommand(term int) *Log {
@@ -224,6 +227,7 @@ type PersistState struct {
 	VoteIdx       int
 	Logs          []*Log
 	CommittedIdx  int
+	LastApplyIdx  int
 	LogIdxMapping map[int]int
 	SnapshotInfo  *SnapshotInfo
 }
@@ -237,19 +241,30 @@ type PersistState struct {
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
 	// Your code here (2C).
+	// encode state
 	buf := new(bytes.Buffer)
 	encoder := labgob.NewEncoder(buf)
 	persistState := PersistState{
 		Term:          rf.Term,
 		VoteIdx:       rf.VoteIdx,
 		Logs:          rf.Logs,
+		LastApplyIdx:  rf.LastApplyIdx,
 		CommittedIdx:  rf.CommittedIdx,
 		LogIdxMapping: rf.LogIdxMapping,
-		SnapshotInfo:  rf.SnapshotInfo,
 	}
 	encoder.Encode(persistState)
 	raftState := buf.Bytes()
-	rf.persister.Save(raftState, nil)
+
+	// encode snapshot
+	var snapshot []byte
+	if rf.SnapshotInfo != nil {
+		snapshot = rf.SnapshotInfo.Data
+		// buf = new(bytes.Buffer)
+		// encoder = labgob.NewEncoder(buf)
+		// encoder.Encode(rf.SnapshotInfo)
+		// snapshot = buf.Bytes()
+	}
+	rf.persister.Save(raftState, snapshot)
 	//util.Logger.Printf("[persist] [S%v] success:%v", rf.me, util.JSONMarshal(persistState))
 }
 
@@ -270,9 +285,32 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.VoteIdx = persistState.VoteIdx
 	rf.Logs = persistState.Logs
 	rf.CommittedIdx = persistState.CommittedIdx
+	// rf.LastApplyIdx = persistState.LastApplyIdx
 	rf.LogIdxMapping = persistState.LogIdxMapping
-	rf.SnapshotInfo = persistState.SnapshotInfo
 	util.Logger.Printf("[readPersist] [S%v] success: %v", rf.me, util.JSONMarshal(persistState))
+}
+
+func (rf *Raft) readSnapshot(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+	buf := bytes.NewBuffer(data)
+	decoder := labgob.NewDecoder(buf)
+	snapshotInfo := SnapshotInfo{}
+	if err := decoder.Decode(&snapshotInfo.LastIncludedIdx); err != nil {
+		util.Logger.Printf("readSnapshot [S%v] decode lastIncludedIndex fail, err=%v", rf.me, err)
+		return
+	}
+	if err := decoder.Decode(&snapshotInfo.Logs); err != nil {
+		util.Logger.Printf("readSnapshot [S%v] decode logs fail, err=%v", rf.me, err)
+		return
+	}
+	if err := decoder.Decode(&snapshotInfo.LastIncludedTerm); err != nil {
+		util.Logger.Printf("readSnapshot [S%v] decode lastIncludedTerm fail, err=%v", rf.me, err)
+		return
+	}
+	rf.SnapshotInfo = &snapshotInfo
+	util.Logger.Printf("[readSnapshot] [S%v] success: %v", rf.me, util.JSONMarshal(snapshotInfo))
 }
 
 // the service says it has created a snapshot that has
@@ -290,9 +328,23 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	util.Logger.Printf("[S%v] [T%v] Snapshot %v", rf.me, rf.Term, index)
 	log := rf.Logs[realIdx]
+	var (
+		lastIncludeIdx int
+		logs           []interface{}
+	)
+	decoder := labgob.NewDecoder(bytes.NewBuffer(snapshot))
+	if decoder.Decode(&lastIncludeIdx) != nil || decoder.Decode(&logs) != nil {
+		panic("Snapshot fail")
+	}
+	buf := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(buf)
+	encoder.Encode(lastIncludeIdx)
+	encoder.Encode(logs)
+	encoder.Encode(log.Term)
 	snapshotInfo := &SnapshotInfo{
-		Data:             snapshot,
+		Data:             buf.Bytes(),
 		LastIncludedIdx:  index,
+		Logs:             logs,
 		LastIncludedTerm: log.Term,
 	}
 	rf.SnapshotInfo = snapshotInfo
@@ -301,6 +353,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		delete(rf.LogIdxMapping, rf.Logs[i].Idx)
 	}
 	rf.Logs = rf.Logs[realIdx+1:]
+	for _, log := range rf.Logs {
+		rf.LogIdxMapping[log.Idx] -= (realIdx + 1)
+	}
+	rf.persist()
 }
 
 // example RequestVote RPC arguments structure.
@@ -453,20 +509,36 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		}
 	}
 
+	lastDeleteIdx := -1
+	for i, log := range rf.Logs {
+		if log.Idx <= args.LastIncludedIdx {
+			lastDeleteIdx = i
+			delete(rf.LogIdxMapping, log.Idx)
+		} else {
+			break
+		}
+	}
+	if lastDeleteIdx != -1 {
+		util.Logger.Printf("InstallSnapshot [S%v] [T%v] delete[%v, %v]=%v", rf.me, rf.Term, 0, lastDeleteIdx, util.JSONMarshal(rf.Logs[:lastDeleteIdx+1]))
+		rf.Logs = rf.Logs[lastDeleteIdx+1:]
+	}
+	if args.LastIncludedIdx > rf.LastApplyIdx {
+		rf.LastApplyIdx = args.LastIncludedIdx
+	}
+
 	snapshotInfo := &SnapshotInfo{
 		LastIncludedIdx:  args.LastIncludedIdx,
 		LastIncludedTerm: args.LastIncludedTerm,
 		Data:             args.Data,
 	}
 	rf.SnapshotInfo = snapshotInfo
-	util.Logger.Printf("S%v T%v begin send snapshot channel", rf.me, rf.Term)
+	rf.persist()
 	rf.ApplyMsgCh <- ApplyMsg{
 		SnapshotValid: true,
 		Snapshot:      snapshotInfo.Data,
 		SnapshotTerm:  snapshotInfo.LastIncludedTerm,
-		SnapshotIndex: snapshotInfo.LastIncludedIdx,
+		SnapshotIndex: snapshotInfo.LastIncludedIdx + 1,
 	}
-	util.Logger.Printf("S%v T%v over send snapshot channel", rf.me, rf.Term)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -574,32 +646,39 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.LogIdxMapping[log.Idx] = len(rf.Logs)
 	rf.Logs = append(rf.Logs, log)
+	util.Logger.Printf("[Start] [S%v] [T%v] rf.Logs=%v, rf.LogIdxMapping=%v", rf.me, rf.Term, util.JSONMarshal(rf.Logs), util.JSONMarshal(rf.LogIdxMapping))
 	rf.mu.Unlock()
 
 	return log.Idx + 1, log.Term, true
 }
 
-// CommitIdx 执行CommitIdx需在外层获取rf.mu
-func (rf *Raft) CommitIdx(idx int) {
-	//util.Logger.Printf("[CommitIdx] [S%v] commit %v", rf.me, idx)
+// UpdateCommitIdx 执行UpdateCommitIdx需在外层获取rf.mu
+// UpdateCommitIdx -> applyMsgCh -> Snapshot
+// 这里仅执行更新UpdateCommitIdx的操作
+func (rf *Raft) UpdateCommitIdx(idx int) {
+	util.Logger.Printf("[UpdateCommitedIdx] [S%v] [T%v] idx=%v", rf.me, rf.Term, idx)
 	if idx <= rf.CommittedIdx {
-		//util.Logger.Printf("[CommitIdx] [S%v] [T%v] commit idx %v <= rf.CommitedIdx %v, not need commit", rf.me, rf.Term, idx, rf.CommittedIdx)
+		util.Logger.Printf("[UpdateCommitedIdx] [S%v] [T%v] commit idx %v <= rf.CommitedIdx %v, not need commit", rf.me, rf.Term, idx, rf.CommittedIdx)
 		return
 	}
 	lastLogIdx, _ := rf.getLastIdxAndTerm()
 	idx = util.Min(idx, lastLogIdx)
-	//util.Logger.Printf("[CommitIdx] [S%v] [T%v] commit idx %v", rf.me, rf.Term, idx)
-	startIdx, _ := rf.getLogByIdx(rf.CommittedIdx + 1)
-	endIdx, _ := rf.getLogByIdx(idx)
-	util.Logger.Printf("CommitIdx startIdx=%v, endIdx=%v", startIdx, endIdx)
-	for i := startIdx; i <= endIdx; i++ {
-		util.Logger.Printf("CommitIdx begin commit %v", i)
-		rf.ApplyMsgCh <- ApplyMsg{
-			CommandValid: true,
-			Command:      rf.Logs[i].Command,
-			CommandIndex: rf.Logs[i].Idx + 1,
-		}
+	if idx <= rf.CommittedIdx {
+		util.Logger.Printf("UpdateCommitedIdx [S%v] [T%v] idx %v <= rf.CommandIndex %v", rf.me, rf.Term, idx, rf.CommittedIdx)
 	}
+	util.Logger.Printf("UpdateCommitedIdx [S%v] [T%v] CommmitedIdx %v->%v", rf.me, rf.Term, rf.CommittedIdx, idx)
+	//util.Logger.Printf("[CommitIdx] [S%v] [T%v] commit idx %v", rf.me, rf.Term, idx)
+	// startIdx, _ := rf.getLogByIdx(rf.CommittedIdx + 1)
+	// endIdx, _ := rf.getLogByIdx(idx)
+	// util.Logger.Printf("CommitIdx [S%v] [T%v] startIdx=%v, endIdx=%v", rf.me, rf.Term, startIdx, endIdx)
+	// for i := startIdx; i <= endIdx; i++ {
+	// 	util.Logger.Printf("CommitIdx [S%v] [T%v] begin commit %v", rf.me, rf.Term, i)
+	// 	rf.ApplyMsgCh <- ApplyMsg{
+	// 		CommandValid: true,
+	// 		Command:      rf.Logs[i].Command,
+	// 		CommandIndex: rf.Logs[i].Idx + 1,
+	// 	}
+	// }
 	rf.CommittedIdx = idx
 }
 
@@ -870,6 +949,7 @@ S3网络恢复，由于此时S3的Term比较大，S1 -> S3的心跳被S3拒绝�
 		此时就与2B中的情况一样,正常处理
 */
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	defer rf.CommitIdx()
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	//util.Logger.Printf("AppendEntries [S%v] [T%v] recv args:%v", rf.me, rf.Term, util.JSONMarshal(args))
@@ -1015,7 +1095,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.Logs = rf.Logs[:conflictIdx+1]
 	}
-	rf.CommitIdx(args.LeaderCommitIdx)
+	rf.UpdateCommitIdx(args.LeaderCommitIdx)
 	rf.persist()
 }
 
@@ -1042,6 +1122,42 @@ func (rf *Raft) SendHeartBeat() {
 	util.Logger.Printf("[SendHeartBeat] [S%v] stop send heart beat", rf.me)
 }
 
+// CommitIdx 外层不能加锁
+func (rf *Raft) CommitIdx() {
+	// 加Commit锁
+	res := rf.CommitMu.TryLock()
+	if res {
+		defer rf.CommitMu.Unlock()
+	} else {
+		return
+	}
+
+	rf.mu.Lock()
+	util.Logger.Printf("CommitIdx [S%v] [T%v] lastApply=%v, CommitedIdx=%v", rf.me, rf.Term, rf.LastApplyIdx, rf.CommittedIdx)
+	lastApplyIdx, commitIdx := rf.LastApplyIdx, rf.CommittedIdx
+	startIdx, _ := rf.getLogByIdx(lastApplyIdx + 1)
+	endIdx, _ := rf.getLogByIdx(commitIdx)
+	logs := rf.Logs
+	rf.mu.Unlock()
+
+	if startIdx > endIdx || startIdx == -1 {
+		// util.Logger.Printf("CommitIdx [S%v] [T%v] startIdx=%v, endIdx=%v", rf.me, rf.Term, startIdx, endIdx)
+		return
+	}
+
+	for i := startIdx; i <= endIdx; i++ {
+		rf.ApplyMsgCh <- ApplyMsg{
+			CommandValid: true,
+			Command:      logs[i].Command,
+			CommandIndex: logs[i].Idx + 1,
+		}
+	}
+
+	rf.mu.Lock()
+	rf.LastApplyIdx = commitIdx
+	rf.mu.Unlock()
+}
+
 // Call 带有超时时间的Call，默认时间为一秒
 func (rf *Raft) Call(svr string, peer int, args, reply interface{}, timeouts ...time.Duration) (ok bool, isTimeout bool) {
 	t := time.Second
@@ -1054,13 +1170,14 @@ func (rf *Raft) Call(svr string, peer int, args, reply interface{}, timeouts ...
 			close(closeCh)
 		}()
 		ok = rf.peers[peer].Call(svr, args, reply)
+		// util.Logger.Printf("%v [S%v] [T%v] reply=%v", svr, rf.me, rf.Term, util.JSONMarshal(reply))
 	}()
 	timer := time.After(t)
 	select {
-	case _ = <-timer:
+	case <-timer:
 		isTimeout = true
 		return
-	case _ = <-closeCh:
+	case <-closeCh:
 		return
 	}
 }
@@ -1069,8 +1186,8 @@ func (rf *Raft) SendAppendEntries() bool {
 	now := time.Now()
 	rf.mu.Lock()
 	term := rf.Term
-	util.Logger.Printf("[SendAppendEntries]NextIdxs=%v, time=%v", util.JSONMarshal(rf.NextIdxs), now)
-	util.Logger.Printf("[SendAppendEntries]MatchIdxs=%v, time=%v", util.JSONMarshal(rf.MatchIdxs), now)
+	util.Logger.Printf("[SendAppendEntries] [S%v] NextIdxs=%v, time=%v", rf.me, util.JSONMarshal(rf.NextIdxs), now)
+	util.Logger.Printf("[SendAppendEntries] [S%v] MatchIdxs=%v, time=%v", rf.me, util.JSONMarshal(rf.MatchIdxs), now)
 	rf.mu.Unlock()
 
 	successCnt, replys, closeCh := int32(len(rf.peers)/2), make([]*AppendEntriesReply, len(rf.peers)), make(chan struct{})
@@ -1088,7 +1205,6 @@ func (rf *Raft) SendAppendEntries() bool {
 				case <-closeCh:
 					return
 				default:
-					util.Logger.Printf("SendAppendEntries [S%v] [T%v] -> %v start, time=%v", rf.me, rf.Term, i, now)
 					rf.mu.Lock()
 					rf.UpdateCommitedIdx()
 					committedIdx := rf.CommittedIdx
@@ -1104,18 +1220,21 @@ func (rf *Raft) SendAppendEntries() bool {
 						logs        []*Log
 						prevLogIdx      = int(rf.getNextIdx(i) - 1)
 						prevLogTerm int = -1
+						term            = rf.Term
 					)
 					rf.mu.Unlock()
 					// 需要发送快照
 					if len(allLogs) > 0 && prevLogIdx+1 < allLogs[0].Idx && snapshotInfo != nil {
 						snapshotArg, snapshotReply := &InstallSnapshotArgs{
+							Term:             term,
+							LeaderIdx:        rf.me,
 							Data:             snapshotInfo.Data,
 							LastIncludedIdx:  snapshotInfo.LastIncludedIdx,
 							LastIncludedTerm: snapshotInfo.LastIncludedTerm,
 						}, &InstallSnapshotReply{}
-						util.Logger.Printf("SendAppendEntries [S%v] [T%v] snapshotArgs=%v", rf.me, rf.Term, util.JSONMarshal(snapshotArg))
-						ok, isTimeout := rf.Call("Raft.InstallSnapshot", i, snapshotArg, snapshotReply, time.Duration(rf.ElectionTimeout)*time.Millisecond)
-						if !ok || isTimeout {
+						util.Logger.Printf("SendAppendEntries [S%v] [T%v] -> [S%v] snapshotArgs=%v", rf.me, rf.Term, i, util.JSONMarshal(snapshotArg))
+						ok := rf.peers[i].Call("Raft.InstallSnapshot", snapshotArg, snapshotReply)
+						if !ok {
 							continue
 						}
 
@@ -1124,7 +1243,8 @@ func (rf *Raft) SendAppendEntries() bool {
 							rf.mu.Unlock()
 							return
 						}
-						if snapshotReply.Term > term {
+						if snapshotReply.Term > rf.Term {
+							util.Logger.Printf("SendAppendEntries [S%v] [T%v] -> [S%v] snapshotReply.Term[%v]> term", rf.me, rf.Term, i, snapshotReply.Term)
 							rf.changeStatus(ServerStatusFollower, -1, true)
 							rf.Term = snapshotReply.Term
 							rf.mu.Unlock()
@@ -1155,7 +1275,7 @@ func (rf *Raft) SendAppendEntries() bool {
 						Logs:            logs,
 						LeaderCommitIdx: committedIdx,
 					}
-					util.Logger.Printf("SendAppendEntries [S%v] [T%v] begin send AppendEntries, args=%v, time=%v", rf.me, rf.Term, util.JSONMarshal(req), now)
+					util.Logger.Printf("SendAppendEntries [S%v] [T%v] -> [S%v] begin send AppendEntries, args=%v, time=%v", rf.me, rf.Term, i, util.JSONMarshal(req), now)
 					rf.mu.Unlock()
 
 					reply := &AppendEntriesReply{}
@@ -1223,6 +1343,9 @@ func (rf *Raft) SendAppendEntries() bool {
 	}
 	close(closeCh)
 
+	// TODO CommitIdx之前应该UpdateCommitIdx下?
+	rf.CommitIdx()
+
 	rf.mu.Lock()
 	nowTerm := rf.Term
 	rf.mu.Unlock()
@@ -1249,6 +1372,7 @@ func (rf *Raft) SendAppendEntries() bool {
 		return false
 	}
 
+	// Leader如果不需要在心跳超时后变为follower，这里就不用续期了
 	if atomic.LoadInt32(&successCnt) <= 0 {
 		rf.mu.Lock()
 		rf.changeStatus(ServerStatusLeader, rf.me)
@@ -1315,7 +1439,8 @@ func (rf *Raft) UpdateCommitedIdx() {
 		}
 	}
 	if canCommitIdx > rf.CommittedIdx {
-		rf.CommitIdx(canCommitIdx)
+		// util.Logger.Printf("UpdateCommitedIdx [S%v] [T%v] %v->%v", rf.me, rf.Term, rf.CommittedIdx, canCommitIdx)
+		rf.UpdateCommitIdx(canCommitIdx)
 		rf.persist()
 	}
 }
@@ -1376,11 +1501,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// 初始化
 	rf.VoteIdx = -1
 	rf.CommittedIdx = -1
+	rf.LastApplyIdx = -1
 	rf.Term = 0
 	rf.LogIdxMapping = make(map[int]int)
 	// initialize from state persisted before a crash
 	// 这一行一定要位于最下方
 	rf.readPersist(persister.ReadRaftState())
+	rf.readSnapshot(persister.ReadSnapshot())
 	rf.ApplyMsgCh = applyCh
 	util.Logger.Printf("[Init] [S%v] lastHeartbeatTime:%v", rf.me, rf.LastHeartbeatTime)
 	util.Logger.Printf("[Init] [S%v] electionTimeout:%v", rf.me, rf.ElectionTimeout)
