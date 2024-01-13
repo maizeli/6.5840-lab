@@ -8,25 +8,20 @@ package raft
 // test with the original before submitting.
 //
 
-import (
-	"bytes"
-	"log"
-	"math/rand"
-	"runtime"
-	"sync"
-	"sync/atomic"
-	"testing"
-
-	"6.5840/labgob"
-	"6.5840/labrpc"
-	"6.5840/util"
-
-	crand "crypto/rand"
-	"encoding/base64"
-	"fmt"
-	"math/big"
-	"time"
-)
+import "6.5840/labgob"
+import "6.5840/labrpc"
+import "bytes"
+import "log"
+import "sync"
+import "sync/atomic"
+import "testing"
+import "runtime"
+import "math/rand"
+import crand "crypto/rand"
+import "math/big"
+import "encoding/base64"
+import "time"
+import "fmt"
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -147,6 +142,7 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	v := m.Command
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
+			log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
 			// some server has already committed a different value for this entry!
 			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
 				m.CommandIndex, i, m.Command, j, old)
@@ -164,7 +160,6 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 // contents
 func (cfg *config) applier(i int, applyCh chan ApplyMsg) {
 	for m := range applyCh {
-		util.Logger.Printf("[Test] applier(%v) start, msg=%v", i, util.JSONMarshal(m))
 		if m.CommandValid == false {
 			// ignore other types of ApplyMsg
 		} else {
@@ -360,7 +355,6 @@ func (cfg *config) cleanup() {
 // attach server i to the net.
 func (cfg *config) connect(i int) {
 	// fmt.Printf("connect(%d)\n", i)
-	util.Logger.Printf("[Test] connect(%d)\n", i)
 
 	cfg.connected[i] = true
 
@@ -383,7 +377,6 @@ func (cfg *config) connect(i int) {
 
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
-	util.Logger.Printf("[Test] disconnect(%d)\n", i)
 	// fmt.Printf("disconnect(%d)\n", i)
 
 	cfg.connected[i] = false
@@ -431,9 +424,7 @@ func (cfg *config) setlongreordering(longrel bool) {
 //
 // try a few times in case re-elections are needed.
 func (cfg *config) checkOneLeader() int {
-	defer util.Logger.Printf("[Test] checkOneLeader over")
 	for iters := 0; iters < 10; iters++ {
-		util.Logger.Printf("[Test] checkOneLeader run %v", iters)
 		ms := 450 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
@@ -511,7 +502,6 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 				cfg.t.Fatalf("committed values do not match: index %v, %v, %v",
 					index, cmd, cmd1)
 			}
-			util.Logger.Printf("[Test] nCommitted server[%v] found", i)
 			count += 1
 			cmd = cmd1
 		}
@@ -567,7 +557,6 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 	starts := 0
 	for time.Since(t0).Seconds() < 10 && cfg.checkFinished() == false {
 		// try all the servers, maybe one is the leader.
-		util.Logger.Printf("[Test] one(%v) starts %v\n", cmd, time.Since(t0).Milliseconds())
 		index := -1
 		for si := 0; si < cfg.n; si++ {
 			starts = (starts + 1) % cfg.n
@@ -578,21 +567,8 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			}
 			cfg.mu.Unlock()
 			if rf != nil {
-				//logsCpy := [][]*Log{}
-				//for _, raft := range cfg.rafts {
-				//	raft.mu.Lock()
-				//	logsCpy = append(logsCpy, raft.Logs)
-				//	raft.mu.Unlock()
-				//}
 				index1, _, ok := rf.Start(cmd)
-				util.Logger.Printf("[Test] one(%v) starts %v, res:%v\n", cmd, time.Since(t0).Milliseconds(), ok)
 				if ok {
-					//for i, logs := range logsCpy {
-					//	cfg.rafts[i].mu.Lock()
-					//	util.Logger.Printf("raft[%v]=%v", i, util.JSONMarshal(logs))
-					//	cfg.rafts[i].mu.Unlock()
-					//}
-					util.Logger.Printf("[Test] one(%v) ends %v, get index:%v\n", cmd, time.Since(t0).Milliseconds(), index1)
 					index = index1
 					break
 				}
@@ -600,13 +576,11 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 		}
 
 		if index != -1 {
-			util.Logger.Printf("[Test] Start success, begin get command...")
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
-				util.Logger.Printf("[Test] nCommitted get(%v)=%v, cnt=%v", index, cmd1, nd)
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					if cmd1 == cmd {
