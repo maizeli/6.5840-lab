@@ -188,7 +188,7 @@ func (rf *Raft) LeaderInit() {
 		rf.NextIdxs[i] = int32(lastLogIdx) + 1
 		rf.MatchIdxs[i] = -1
 	}
-	util.Logger.Printf("[LeaderInit] [S%v] [T%v] end...", rf.me, rf.Term)
+	// util.Logger.Printf("[LeaderInit] [S%v] [T%v] end...", rf.me, rf.Term)
 }
 
 /*
@@ -229,7 +229,6 @@ type PersistState struct {
 	CommittedIdx  int
 	LastApplyIdx  int
 	LogIdxMapping map[int]int
-	SnapshotInfo  *SnapshotInfo
 }
 
 // save Raft's persistent state to stable storage,
@@ -259,13 +258,14 @@ func (rf *Raft) persist() {
 	var snapshot []byte
 	if rf.SnapshotInfo != nil {
 		snapshot = rf.SnapshotInfo.Data
-		// buf = new(bytes.Buffer)
-		// encoder = labgob.NewEncoder(buf)
-		// encoder.Encode(rf.SnapshotInfo)
-		// snapshot = buf.Bytes()
+		// if len(snapshot) == 0 {
+		// 	util.Logger.Printf("[persist] [S%v] len of snapshot is 0", rf.me)
+		// } else {
+		// 	util.Logger.Printf("[persist] [S%v] len of snapshot > 0", rf.me)
+		// }
 	}
 	rf.persister.Save(raftState, snapshot)
-	//util.Logger.Printf("[persist] [S%v] success:%v", rf.me, util.JSONMarshal(persistState))
+	util.Logger.Printf("[persist] [S%v] success:%v", rf.me, util.JSONMarshal(persistState))
 }
 
 // restore previously persisted state.
@@ -291,16 +291,24 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 func (rf *Raft) readSnapshot(data []byte) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	if data == nil || len(data) < 1 { // bootstrap without any state?
+		util.Logger.Printf("readSnapshot [S%v] data==nil || len(data) < 1", rf.me)
 		return
 	}
 	buf := bytes.NewBuffer(data)
 	decoder := labgob.NewDecoder(buf)
-	snapshotInfo := SnapshotInfo{}
+	snapshotInfo := SnapshotInfo{
+		Data: data,
+	}
 	if err := decoder.Decode(&snapshotInfo.LastIncludedIdx); err != nil {
 		util.Logger.Printf("readSnapshot [S%v] decode lastIncludedIndex fail, err=%v", rf.me, err)
 		return
 	}
+	// data是config.go中制作，此时的index相比于Logs中的Idx大1
+	snapshotInfo.LastIncludedIdx--
 	if err := decoder.Decode(&snapshotInfo.Logs); err != nil {
 		util.Logger.Printf("readSnapshot [S%v] decode logs fail, err=%v", rf.me, err)
 		return
@@ -309,8 +317,24 @@ func (rf *Raft) readSnapshot(data []byte) {
 		util.Logger.Printf("readSnapshot [S%v] decode lastIncludedTerm fail, err=%v", rf.me, err)
 		return
 	}
+	lastDeleteIdx := -1
+	for i, log := range rf.Logs {
+		if log.Idx <= snapshotInfo.LastIncludedIdx {
+			lastDeleteIdx = i
+			delete(rf.LogIdxMapping, log.Idx)
+		} else {
+			break
+		}
+	}
+	if lastDeleteIdx != -1 {
+		util.Logger.Printf("InstallSnapshot [S%v] [T%v] delete[%v, %v]=%v", rf.me, rf.Term, 0, lastDeleteIdx, util.JSONMarshal(rf.Logs[:lastDeleteIdx+1]))
+		rf.Logs = rf.Logs[lastDeleteIdx+1:]
+	}
 	rf.SnapshotInfo = &snapshotInfo
-	util.Logger.Printf("[readSnapshot] [S%v] success: %v", rf.me, util.JSONMarshal(snapshotInfo))
+	rf.LastApplyIdx = snapshotInfo.LastIncludedIdx
+	util.Logger.Printf("[readSnapshot] [S%v] LastApplyIdx->%v", rf.me, snapshotInfo.LastIncludedIdx)
+	rf.persist()
+	util.Logger.Printf("[readSnapshot] [S%v] success: %v, lastApplyIdx=%v", rf.me, util.JSONMarshal(snapshotInfo), rf.LastApplyIdx)
 }
 
 // the service says it has created a snapshot that has
@@ -326,7 +350,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	realIdx, _ := rf.getLogByIdx(index)
 	util.Logger.Printf("[S%v] [T%v] Snapshot index=%v, realIndex=%v", rf.me, rf.Term, index, realIdx)
 
-	util.Logger.Printf("[S%v] [T%v] Snapshot %v", rf.me, rf.Term, index)
 	log := rf.Logs[realIdx]
 	var (
 		lastIncludeIdx int
@@ -348,6 +371,9 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		LastIncludedTerm: log.Term,
 	}
 	rf.SnapshotInfo = snapshotInfo
+	// if len(snapshotInfo.Data) == 0 {
+	// 	util.Logger.Printf("Snapshot [S%v] snapshotInfo.Data is nil", rf.me)
+	// }
 
 	for i := 0; i <= realIdx; i++ {
 		delete(rf.LogIdxMapping, rf.Logs[i].Idx)
@@ -509,6 +535,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		}
 	}
 
+	rf.Term = args.Term
+	rf.changeStatus(ServerStatusFollower, args.LeaderIdx, true)
+
 	lastDeleteIdx := -1
 	for i, log := range rf.Logs {
 		if log.Idx <= args.LastIncludedIdx {
@@ -522,9 +551,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		util.Logger.Printf("InstallSnapshot [S%v] [T%v] delete[%v, %v]=%v", rf.me, rf.Term, 0, lastDeleteIdx, util.JSONMarshal(rf.Logs[:lastDeleteIdx+1]))
 		rf.Logs = rf.Logs[lastDeleteIdx+1:]
 	}
-	if args.LastIncludedIdx > rf.LastApplyIdx {
-		rf.LastApplyIdx = args.LastIncludedIdx
-	}
 
 	snapshotInfo := &SnapshotInfo{
 		LastIncludedIdx:  args.LastIncludedIdx,
@@ -533,11 +559,23 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 	rf.SnapshotInfo = snapshotInfo
 	rf.persist()
+	// 向ApplyMsg中写入数据时，会无脑更新lastAppliedIdx，所以这里要判断下大小关系
+	if args.LastIncludedIdx <= rf.LastApplyIdx {
+		return
+	}
 	rf.ApplyMsgCh <- ApplyMsg{
 		SnapshotValid: true,
 		Snapshot:      snapshotInfo.Data,
 		SnapshotTerm:  snapshotInfo.LastIncludedTerm,
 		SnapshotIndex: snapshotInfo.LastIncludedIdx + 1,
+	}
+	if args.LastIncludedIdx > rf.LastApplyIdx {
+		util.Logger.Printf("InstallSnapshot [S%v] LastApplyIdx->%v", rf.me, args.LastIncludedIdx)
+		rf.LastApplyIdx = args.LastIncludedIdx
+	}
+	if args.LastIncludedIdx > rf.CommittedIdx {
+		util.Logger.Printf("InstallSnapshot [S%v] CommitedIdx->%v", rf.me, args.LastIncludedIdx)
+		rf.CommittedIdx = args.LastIncludedIdx
 	}
 }
 
@@ -667,18 +705,6 @@ func (rf *Raft) UpdateCommitIdx(idx int) {
 		util.Logger.Printf("UpdateCommitedIdx [S%v] [T%v] idx %v <= rf.CommandIndex %v", rf.me, rf.Term, idx, rf.CommittedIdx)
 	}
 	util.Logger.Printf("UpdateCommitedIdx [S%v] [T%v] CommmitedIdx %v->%v", rf.me, rf.Term, rf.CommittedIdx, idx)
-	//util.Logger.Printf("[CommitIdx] [S%v] [T%v] commit idx %v", rf.me, rf.Term, idx)
-	// startIdx, _ := rf.getLogByIdx(rf.CommittedIdx + 1)
-	// endIdx, _ := rf.getLogByIdx(idx)
-	// util.Logger.Printf("CommitIdx [S%v] [T%v] startIdx=%v, endIdx=%v", rf.me, rf.Term, startIdx, endIdx)
-	// for i := startIdx; i <= endIdx; i++ {
-	// 	util.Logger.Printf("CommitIdx [S%v] [T%v] begin commit %v", rf.me, rf.Term, i)
-	// 	rf.ApplyMsgCh <- ApplyMsg{
-	// 		CommandValid: true,
-	// 		Command:      rf.Logs[i].Command,
-	// 		CommandIndex: rf.Logs[i].Idx + 1,
-	// 	}
-	// }
 	rf.CommittedIdx = idx
 }
 
@@ -1145,6 +1171,7 @@ func (rf *Raft) CommitIdx() {
 		return
 	}
 
+	util.Logger.Printf("CommitIdx [S%v] startIdx=%v, endIdx=%v", rf.me, startIdx, endIdx)
 	for i := startIdx; i <= endIdx; i++ {
 		rf.ApplyMsgCh <- ApplyMsg{
 			CommandValid: true,
@@ -1154,7 +1181,9 @@ func (rf *Raft) CommitIdx() {
 	}
 
 	rf.mu.Lock()
+	util.Logger.Printf("CommitIdx [S%v] LastApplyIdx->%v", rf.me, commitIdx)
 	rf.LastApplyIdx = commitIdx
+	rf.persist()
 	rf.mu.Unlock()
 }
 
@@ -1481,6 +1510,7 @@ type AppendEntriesReply struct {
 // for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	// util.Logger.Printf("Make[%v] len(snapshot)=%v", me, len(persister.ReadSnapshot()))
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
@@ -1511,6 +1541,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.ApplyMsgCh = applyCh
 	util.Logger.Printf("[Init] [S%v] lastHeartbeatTime:%v", rf.me, rf.LastHeartbeatTime)
 	util.Logger.Printf("[Init] [S%v] electionTimeout:%v", rf.me, rf.ElectionTimeout)
+	util.Logger.Printf("[Init] [S%v] LastApplyIdx:%v", rf.me, rf.LastApplyIdx)
+	util.Logger.Printf("[Init] [S%v] Logs=%v, LogIdxMapping=%v", rf.me, util.JSONMarshal(rf.Logs), util.JSONMarshal(rf.LogIdxMapping))
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
