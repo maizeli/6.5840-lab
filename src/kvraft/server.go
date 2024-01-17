@@ -1,12 +1,15 @@
 package kvraft
 
 import (
-	"6.5840/labgob"
-	"6.5840/labrpc"
-	"6.5840/raft"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
+
+	"6.5840/labgob"
+	"6.5840/labrpc"
+	"6.5840/raft"
+	"6.5840/util"
 )
 
 const Debug = false
@@ -18,11 +21,22 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+type ArgsType int32
+
+var (
+	ArgsType_PutAppend ArgsType = 1
+	ArgsType_Get       ArgsType = 2
+)
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	ArgsType      ArgsType
+	PutAppendArgs *PutAppendArgs
+	GetArgs       *GetArgs
+
+	GetValue string
 }
 
 type KVServer struct {
@@ -35,15 +49,80 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	Data          map[string]string
+	dataMutex     sync.Mutex
+	Callback      map[int][]chan *Op // key=index
+	callbackMutex sync.Mutex
+	cache         map[string]struct{}
+	cacheMutex    sync.Mutex
 }
 
-
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	util.Logger.Printf("kv[%v] recv Get args=%v", kv.me, util.JSONMarshal(args))
+	defer util.Logger.Printf("kv[%v] Get reply=%v", kv.me, util.JSONMarshal(reply))
 	// Your code here.
+	op := &Op{
+		ArgsType: ArgsType_Get,
+		GetArgs:  args,
+	}
+	idx, _, isLeader := kv.rf.Start(*op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	ch := make(chan *Op)
+	kv.callbackMutex.Lock()
+	kv.Callback[idx] = append(kv.Callback[idx], ch)
+	kv.callbackMutex.Unlock()
+	for op := range ch {
+		switch op.ArgsType {
+		case ArgsType_Get:
+			if args.TimeStamp != op.GetArgs.TimeStamp {
+				reply.Err = ErrCommandNotCommit
+				return
+			}
+			reply.Value = op.GetValue
+			return
+		default:
+		}
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	util.Logger.Printf("kv[%v] recv PutAppend args=%v", kv.me, util.JSONMarshal(args))
 	// Your code here.
+	op := &Op{
+		ArgsType:      ArgsType_PutAppend,
+		PutAppendArgs: args,
+	}
+	if kv.hitCache(op) {
+		util.Logger.Printf("kv[%v] PutAppend hit cache", kv.me)
+		return
+	}
+	idx, _, isLeader := kv.rf.Start(*op)
+	if !isLeader {
+		util.Logger.Printf("kv[%v] PutAppend not leader", kv.me)
+		reply.Err = ErrWrongLeader
+		return
+	}
+	util.Logger.Printf("kv[%v] PutAppend is leader", kv.me)
+	ch := make(chan *Op)
+	kv.callbackMutex.Lock()
+	kv.Callback[idx] = append(kv.Callback[idx], ch)
+	kv.callbackMutex.Unlock()
+	for op := range ch {
+		switch op.ArgsType {
+		case ArgsType_PutAppend:
+			if args.TimeStamp != op.PutAppendArgs.TimeStamp {
+				util.Logger.Printf("kv[%v] PutAppend args.TimeStamp!=op.PutAppendArgs.TimeStamp, args=%v, op.PutAppendArgs=%v", kv.me, util.JSONMarshal(args), util.JSONMarshal(op.PutAppendArgs))
+				reply.Err = ErrCommandNotCommit
+				return
+			}
+			util.Logger.Printf("kv[%v] PutAppend success, reply=%v", kv.me, util.JSONMarshal(reply))
+			return
+		default:
+		}
+	}
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -87,11 +166,92 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
+	kv.Data = make(map[string]string)
+	kv.Callback = make(map[int][]chan *Op)
+	kv.cache = make(map[string]struct{})
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	go kv.apply()
+	// Start一个空的，初始化下快照
+	// kv.rf.Start(&Op{
+	// 	ArgsType: ArgsType(0),
+	// })
+	// TODO 应该要针对Snapshot中的Log初始化下kv.Data
 
 	return kv
+}
+
+func (kv *KVServer) apply() {
+	for msg := range kv.applyCh {
+		if msg.CommandValid {
+			op := msg.Command.(Op)
+			switch op.ArgsType {
+			case ArgsType_Get:
+				kv.dataMutex.Lock()
+				op.GetValue = kv.Data[op.GetArgs.Key]
+				kv.dataMutex.Unlock()
+				kv.callback(msg.CommandIndex, &op)
+			case ArgsType_PutAppend:
+				kv.dataMutex.Lock()
+				if op.PutAppendArgs.Op == "Put" {
+					kv.Data[op.PutAppendArgs.Key] = op.PutAppendArgs.Value
+				} else if op.PutAppendArgs.Op == "Append" {
+					kv.Data[op.PutAppendArgs.Key] += op.PutAppendArgs.Value
+				}
+				kv.dataMutex.Unlock()
+				// 缓存住
+				kv.writeCache(&op)
+				kv.callback(msg.CommandIndex, &op)
+			default:
+				continue
+			}
+		} else if msg.SnapshotValid {
+
+		} else {
+
+		}
+	}
+}
+
+// writeCache 仅cache PutAppend
+func (kv *KVServer) writeCache(op *Op) {
+	if op == nil || op.ArgsType != ArgsType_PutAppend {
+		return
+	}
+	kv.cacheMutex.Lock()
+	defer kv.cacheMutex.Unlock()
+	key := fmt.Sprintf("%v#%v#%v", op.PutAppendArgs.Op, op.PutAppendArgs.ClientIdx, op.PutAppendArgs.TimeStamp)
+	kv.cache[key] = struct{}{}
+}
+
+func (kv *KVServer) hitCache(op *Op) bool {
+	if op == nil || op.ArgsType != ArgsType_PutAppend {
+		return false
+	}
+	kv.cacheMutex.Lock()
+	defer kv.cacheMutex.Unlock()
+	key := fmt.Sprintf("%v#%v#%v", op.PutAppendArgs.Op, op.PutAppendArgs.ClientIdx, op.PutAppendArgs.TimeStamp)
+	_, ok := kv.cache[key]
+	if !ok {
+		return false
+	}
+
+	return true
+}
+
+// callback 回调函数
+func (kv *KVServer) callback(idx int, op *Op) {
+	kv.callbackMutex.Lock()
+	chList := kv.Callback[idx]
+	kv.callbackMutex.Unlock()
+
+	for _, ch := range chList {
+		ch := ch
+		go func() {
+			ch <- op
+		}()
+	}
 }

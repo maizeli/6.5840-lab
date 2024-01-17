@@ -1,13 +1,23 @@
 package kvraft
 
-import "6.5840/labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
+	"sync"
+	"sync/atomic"
+	"time"
 
+	"6.5840/labrpc"
+	"6.5840/util"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	DB      map[string]string
+	DBMutex sync.Mutex
+
+	lastServer int32
 }
 
 func nrand() int64 {
@@ -37,7 +47,26 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	args := &GetArgs{
+		Key:       key,
+		TimeStamp: time.Now().UnixNano(),
+	}
+
+	server := ck.lastServer
+	for {
+		reply := &GetReply{}
+		util.Logger.Printf("ck begin call kv[%v] Get args=%v", server, util.JSONMarshal(args))
+		ck.servers[server].Call("KVServer.Get", args, reply)
+		if len(reply.Err) != 0 {
+			server = (server + 1) % int32(len(ck.servers))
+			time.Sleep(time.Second)
+		} else {
+			atomic.StoreInt32(&ck.lastServer, server)
+			return reply.Value
+		}
+	}
+
+	return "v_v"
 }
 
 // shared by Put and Append.
@@ -50,6 +79,27 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	args := &PutAppendArgs{
+		Key:       key,
+		Op:        op,
+		Value:     value,
+		TimeStamp: time.Now().UnixNano(),
+	}
+
+	server := atomic.LoadInt32(&ck.lastServer)
+	for {
+		reply := &PutAppendReply{}
+		util.Logger.Printf("ck begin call kv[%v] PutAppend args=%v", server, util.JSONMarshal(args))
+		ck.servers[server].Call("KVServer.PutAppend", args, reply)
+		util.Logger.Printf("ck begin call kv[%v] PutAppend reply=%v", server, util.JSONMarshal(reply))
+		if len(reply.Err) != 0 {
+			server = (server + 1) % int32(len(ck.servers))
+			time.Sleep(time.Second)
+		} else {
+			atomic.StoreInt32(&ck.lastServer, server)
+			return
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
