@@ -59,7 +59,7 @@ func (ck *Clerk) Get(key string) string {
 		ck.servers[server].Call("KVServer.Get", args, reply)
 		if len(reply.Err) != 0 {
 			server = (server + 1) % int32(len(ck.servers))
-			time.Sleep(time.Second)
+			time.Sleep(time.Millisecond * 10)
 		} else {
 			atomic.StoreInt32(&ck.lastServer, server)
 			return reply.Value
@@ -93,8 +93,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ck.servers[server].Call("KVServer.PutAppend", args, reply)
 		util.Logger.Printf("ck begin call kv[%v] PutAppend reply=%v", server, util.JSONMarshal(reply))
 		if len(reply.Err) != 0 {
+			util.Logger.Printf("ck reply err[%v]", reply.Err)
 			server = (server + 1) % int32(len(ck.servers))
-			time.Sleep(time.Second)
+			// time.Sleep(time.Millisecond * 10)
 		} else {
 			atomic.StoreInt32(&ck.lastServer, server)
 			return

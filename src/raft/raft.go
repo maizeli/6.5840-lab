@@ -122,6 +122,7 @@ func (rf *Raft) getLastIdxAndTerm() (int, int) {
 
 // getLogByIdx 获取指定idx的Log
 func (rf *Raft) getLogByIdx(idx int) (int, *Log) {
+	// util.Logger.Printf("[S%v] LogIdxMapping=%v", rf.me, util.JSONMarshal(rf.LogIdxMapping))
 	logIdx, ok := rf.LogIdxMapping[idx]
 	if !ok {
 		return -1, nil
@@ -342,6 +343,7 @@ func (rf *Raft) readSnapshot(data []byte) {
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
+	util.Logger.Printf("[S%v] Snapshot %v", rf.me, index)
 	// Your code here (2D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -381,6 +383,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.Logs = rf.Logs[realIdx+1:]
 	for _, log := range rf.Logs {
 		rf.LogIdxMapping[log.Idx] -= (realIdx + 1)
+		util.Logger.Printf("[S%v] rf.LogIdxMapping[%v]=%v", rf.me, log.Idx, rf.LogIdxMapping[log.Idx])
 	}
 	rf.persist()
 }
@@ -518,8 +521,12 @@ InstallSnapshot
 这里只要args.Term >= rf.Term就只需要无条件的更新Snapshot吗
 */
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.CommitMu.Lock()
+	defer rf.CommitMu.Unlock()
+
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
 	util.Logger.Printf("InstallSnapshot [S%v] [T%v] args=%v", rf.me, rf.Term, util.JSONMarshal(args))
 
 	reply.Term = rf.Term
@@ -549,6 +556,12 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 	if lastDeleteIdx != -1 {
 		util.Logger.Printf("InstallSnapshot [S%v] [T%v] delete[%v, %v]=%v", rf.me, rf.Term, 0, lastDeleteIdx, util.JSONMarshal(rf.Logs[:lastDeleteIdx+1]))
+		for _, log := range rf.Logs {
+			if log.Idx > args.LastIncludedIdx {
+				rf.LogIdxMapping[log.Idx] -= (lastDeleteIdx + 1)
+				util.Logger.Printf("InstallSnapshot [S%v] rf.LogIdxMapping[%v]=%v", rf.me, log.Idx, rf.LogIdxMapping[log.Idx])
+			}
+		}
 		rf.Logs = rf.Logs[lastDeleteIdx+1:]
 	}
 
@@ -683,9 +696,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 	}
 	rf.LogIdxMapping[log.Idx] = len(rf.Logs)
+	util.Logger.Printf("[S%v] rf.LogIdxMapping[%v]=%v", rf.me, log.Idx, len(rf.Logs))
 	rf.Logs = append(rf.Logs, log)
 	util.Logger.Printf("[Start] [S%v] [T%v] rf.Logs=%v, rf.LogIdxMapping=%v", rf.me, rf.Term, util.JSONMarshal(rf.Logs), util.JSONMarshal(rf.LogIdxMapping))
 	rf.mu.Unlock()
+
+	go rf.SendAppendEntries()
 
 	return log.Idx + 1, log.Term, true
 }
@@ -703,6 +719,7 @@ func (rf *Raft) UpdateCommitIdx(idx int) {
 	idx = util.Min(idx, lastLogIdx)
 	if idx <= rf.CommittedIdx {
 		util.Logger.Printf("UpdateCommitedIdx [S%v] [T%v] idx %v <= rf.CommandIndex %v", rf.me, rf.Term, idx, rf.CommittedIdx)
+		return
 	}
 	util.Logger.Printf("UpdateCommitedIdx [S%v] [T%v] CommmitedIdx %v->%v", rf.me, rf.Term, rf.CommittedIdx, idx)
 	rf.CommittedIdx = idx
@@ -978,7 +995,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.CommitIdx()
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//util.Logger.Printf("AppendEntries [S%v] [T%v] recv args:%v", rf.me, rf.Term, util.JSONMarshal(args))
+	util.Logger.Printf("AppendEntries [S%v] [T%v] recv args:%v", rf.me, rf.Term, util.JSONMarshal(args))
 	defer func(reply *AppendEntriesReply) {
 		//util.Logger.Printf("AppendEntries [S%v] [T%v] reply=%v", rf.me, rf.Term, util.JSONMarshal(reply))
 	}(reply)
@@ -1101,6 +1118,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if log == nil {
 			rf.Logs = append(rf.Logs, argLog)
 			rf.LogIdxMapping[argLog.Idx] = len(rf.Logs) - 1
+			util.Logger.Printf("[S%v] rf.LogIdxMapping[%v]=%v", rf.me, argLog.Idx, len(rf.Logs)-1)
 			continue
 		}
 		// Log存在冲突时才需要删除后面的元素
@@ -1109,6 +1127,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.Logs[logIdx] = argLog
 		rf.LogIdxMapping[argLog.Idx] = logIdx
+		util.Logger.Printf("[S%v] rf.LogIdxMapping[%v]=%v", rf.me, argLog.Idx, logIdx)
 	}
 
 	// 删除冲突的Log
@@ -1151,19 +1170,15 @@ func (rf *Raft) SendHeartBeat() {
 // CommitIdx 外层不能加锁
 func (rf *Raft) CommitIdx() {
 	// 加Commit锁
-	res := rf.CommitMu.TryLock()
-	if res {
-		defer rf.CommitMu.Unlock()
-	} else {
-		return
-	}
+	rf.CommitMu.Lock()
+	defer rf.CommitMu.Unlock()
 
 	rf.mu.Lock()
 	util.Logger.Printf("CommitIdx [S%v] [T%v] lastApply=%v, CommitedIdx=%v", rf.me, rf.Term, rf.LastApplyIdx, rf.CommittedIdx)
 	lastApplyIdx, commitIdx := rf.LastApplyIdx, rf.CommittedIdx
 	startIdx, _ := rf.getLogByIdx(lastApplyIdx + 1)
 	endIdx, _ := rf.getLogByIdx(commitIdx)
-	logs := rf.Logs
+	logs := append([]*Log{}, rf.Logs...)
 	rf.mu.Unlock()
 
 	if startIdx > endIdx || startIdx == -1 {
@@ -1181,9 +1196,11 @@ func (rf *Raft) CommitIdx() {
 	}
 
 	rf.mu.Lock()
-	util.Logger.Printf("CommitIdx [S%v] LastApplyIdx->%v", rf.me, commitIdx)
-	rf.LastApplyIdx = commitIdx
-	rf.persist()
+	if commitIdx > rf.LastApplyIdx {
+		util.Logger.Printf("CommitIdx [S%v] LastApplyIdx->%v", rf.me, commitIdx)
+		rf.LastApplyIdx = commitIdx
+		rf.persist()
+	}
 	rf.mu.Unlock()
 }
 
@@ -1235,7 +1252,7 @@ func (rf *Raft) SendAppendEntries() bool {
 					return
 				default:
 					rf.mu.Lock()
-					rf.UpdateCommitedIdx()
+					rf.calcCommitedIdx()
 					committedIdx := rf.CommittedIdx
 					allLogs := rf.Logs
 					snapshotInfo := rf.SnapshotInfo
@@ -1297,7 +1314,7 @@ func (rf *Raft) SendAppendEntries() bool {
 						prevLogTerm = prevLog.Term
 					}
 					req := &AppendEntriesArgs{
-						Term:            term,
+						Term:            rf.Term,
 						LeaderIdx:       rf.me,
 						PrevLogIdx:      prevLogIdx,
 						PrevLogTerm:     prevLogTerm,
@@ -1430,7 +1447,7 @@ func (rf *Raft) storeMatchIdx(i int, value int32) {
 
 // 根据MatchIdxs更新commitedIdx, 须持有锁
 // 这里server的数量不会太大直接双重for循环计算
-func (rf *Raft) UpdateCommitedIdx() {
+func (rf *Raft) calcCommitedIdx() {
 	if rf.ServerStatus != ServerStatusLeader {
 		return
 	}

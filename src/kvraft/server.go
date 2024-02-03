@@ -5,6 +5,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"6.5840/labgob"
 	"6.5840/labrpc"
@@ -89,7 +90,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	util.Logger.Printf("kv[%v] recv PutAppend args=%v", kv.me, util.JSONMarshal(args))
+	st := time.Now()
+	// util.TestLogger.Printf("kv[%v] recv PutAppend args=%v", kv.me, util.JSONMarshal(args))
 	// Your code here.
 	op := &Op{
 		ArgsType:      ArgsType_PutAppend,
@@ -118,6 +120,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				reply.Err = ErrCommandNotCommit
 				return
 			}
+			// et := time.Now()
+			// util.TestLogger.Printf("PutAppend[%v] cost %v ms", kv.me, et.Sub(st).Milliseconds())
 			util.Logger.Printf("kv[%v] PutAppend success, reply=%v", kv.me, util.JSONMarshal(reply))
 			return
 		default:
